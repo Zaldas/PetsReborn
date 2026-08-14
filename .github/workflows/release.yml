@@ -1,0 +1,45 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers on tags like v0.3, v0.4, etc.
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create release zip
+        run: |
+          mkdir -p release
+          git archive HEAD --prefix=PetsReborn/ | tar -xC release/
+          cd release && zip -r PetsReborn.zip PetsReborn && cd ..
+
+          # --- Fonts (install to Windows; layouts reference them by family name) ---
+          cp ".github/fonts/Grammara.ttf" release/
+          cp ".github/fonts/Penumbra Serif Std.otf" release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: PetsReborn.${{ steps.version.outputs.VERSION }}
+          files: |
+            release/PetsReborn.zip
+            release/Grammara.ttf
+            release/Penumbra Serif Std.otf
+          generate_release_notes: true
+          draft: true
+          fail_on_unmatched_files: true
