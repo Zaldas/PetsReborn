@@ -1,7 +1,7 @@
 -- data/jugPets.lua
 -- Jug pet name → duration in minutes.
 -- Used by data.lua to build jugPetNames (bool) and jugPetDurations (seconds) in data.init().
--- Durations sourced from petme/XIUI. HorizonXI-specific pets without confirmed data default to 60.
+-- HorizonXI-specific pets without confirmed data default to 60.
 -- Add new HorizonXI pets here; do NOT edit data.lua for pet additions.
 return {
     -- 30 minute pets
@@ -55,14 +55,14 @@ return {
     FatsoFargann     = 120,
     FaithfulFalcorr  = 120,
     BugeyedBroncha   = 120,
-    BloodclawShashra = 120,  -- PetsReborn spelling
-    BloodclawShasra  = 120,  -- XIUI spelling
+    BloodclawShashra = 120,
+    BloodclawShasra  = 120,  -- alternate spelling; both kept, reported client string varies
     GorefangHobs     = 120,
     DroopyDortwin    = 120,
     SunburstMalfik   = 120,
     WarlikePatrick   = 120,
-    ScissorgaleXerin = 120,  -- PetsReborn spelling
-    ScissorlegXerin  = 120,  -- XIUI spelling
+    ScissorgaleXerin = 120,
+    ScissorlegXerin  = 120,  -- alternate spelling; both kept, reported client string varies
     RhymingShizuna   = 120,
     AttentiveIbuki   = 120,
     AmiableRoche     = 120,

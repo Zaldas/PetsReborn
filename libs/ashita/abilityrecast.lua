@@ -1,6 +1,5 @@
 -- ashita/abilityrecast.lua
 -- Direct memory reader for ability recast timers.
--- Uses the same memory scanning approach as the PetMe / XIUI addons.
 --
 -- Ashita's built-in GetAbilityTimer(index) is a direct array lookup that
 -- does NOT match by timer ID. This scanner instead walks the 31 active

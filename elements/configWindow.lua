@@ -63,7 +63,7 @@ local function scanStyles(layoutsPath)
 end
 
 -----------------------------------------------------------------------
--- Style helpers (matching SkillchainCalc)
+-- Style helpers
 -----------------------------------------------------------------------
 
 -- Blue gradient fade subheading (solid left → transparent right).

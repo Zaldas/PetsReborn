@@ -599,7 +599,7 @@ function data.refreshState(State)
         State.target.serverId = 0
     end
 
-    -- Stay counter: per-frame movement check and tick reset (mirrors PetMe logic exactly)
+    -- Stay counter: per-frame movement check and tick reset
     -- First tick = 20s (set by packet handler), subsequent ticks = 10s each.
     -- Cancel if pet moves after the 1s grace period (stayExpiry - now < 19).
     if (State.petType == 'charm' or State.petType == 'jug') and State.bst.stayExpiry ~= nil then

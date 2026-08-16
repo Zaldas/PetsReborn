@@ -1,7 +1,7 @@
 -- data/charmGear.lua
 -- BST charm-time gear table (CHARM_TIME bonus lookup, static data only).
 -- Each entry: item ID → CHARM_TIME bonus points (5% per point to charm duration).
--- Source: PetMe petBSTCharm.lua (HorizonXI-verified item IDs).
+-- Item IDs are HorizonXI-verified.
 -- Add new HorizonXI BST gear entries here as they are discovered.
 
 local CHARM_GEAR = {

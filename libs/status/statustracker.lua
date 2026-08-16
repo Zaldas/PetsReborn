@@ -16,7 +16,7 @@ local FALLBACK_DURATION_S       = 300;
 -- Status-ON messages: action packet messages that carry a status effect application.
 -- Named IDs match xi.msg.basic in LSB-server/scripts/enum/msg.lua.
 -- IDs marked [retail] are from retail packet captures; not in HorizonXI's msg.lua but
--- confirmed by XIUI and LSB test comments — harmless if they don't fire here.
+-- confirmed by LSB test comments — harmless if they don't fire here.
 --   101=USES (mob 2hr self-buffs), 127=JA_ENFEEB_IS, 160=ADD_EFFECT_STATUS,
 --   164=ADD_EFFECT_STATUS_2, 166=ADD_EFFECT_SELFBUFF, 186=SKILL_GAIN_EFFECT,
 --   194=[retail] SKILL_GAIN_EFFECT variant (LSB test: "Retail accurate is 194"),
@@ -30,7 +30,7 @@ local FALLBACK_DURATION_S       = 300;
 -- NOTE: 277=IS_EFFECT ("is <status>") is included — the server sends this for AoE secondary
 --   targets (e.g. Sleepga: direct target gets 230, all other targets in the AoE get 277).
 --   Excluding it breaks AoE status tracking entirely; any false-timer risk on mob skills is
---   minor and accepted (matches XIUI behaviour).
+--   minor and accepted.
 local statusOnMes = {[101]=true,[127]=true,[160]=true,[164]=true,[166]=true,[186]=true,[194]=true,[203]=true,[205]=true,[230]=true,[236]=true,[242]=true,[243]=true,[266]=true,[267]=true,[268]=true,[269]=true,[237]=true,[271]=true,[272]=true,[277]=true,[278]=true,[279]=true,[280]=true,[319]=true,[320]=true,[375]=true,[412]=true,[645]=true,[754]=true,[755]=true,[804]=true}
 -- Status-OFF messages: action/message packet messages that indicate a status was removed.
 --   64=[retail], 159=SKILL_ERASE, 204=IS_NO_LONGER_STATUS, 206=STATUS_WEARS_OFF,

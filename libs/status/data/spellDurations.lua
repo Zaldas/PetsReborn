@@ -68,6 +68,7 @@ return {
     [377] = 60,  [471] = 60,              -- Horde Lullaby II / Foe Lullaby II
     [321] = 60,                           -- Bully
     [472] = 120,                          -- Pining Nocturne
+    [466] = 30,                           -- Maiden's Virelai → Charm (14); gear-boosted only, no song-duration bonus
 
     -- ── Haste ─────────────────────────────────────────────────────────────
     [57]  = 180,  -- Haste
