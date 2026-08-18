@@ -32,7 +32,7 @@ local slots = {
         { id = 207, displayName = 'Deploy',     job = 'PUP', level =  1, requiresPet = true },
         { id = 208, displayName = 'Deactivate', job = 'PUP', level =  1, requiresPet = true },
         { id = 209, displayName = 'Retrieve',   job = 'PUP', level = 10, requiresPet = true },
-        -- { id = 115, displayName = 'Deus Ex Automata', job = 'PUP', level =  5 },  -- cd:01:00, Abyssea content
+        { id = 115, displayName = 'Deus Ex Automata', job = 'PUP', level = 40 }, -- Horizon lv40
         -- { id = 214, displayName = 'Maintenance',      job = 'PUP', level = 30 },  -- cd:01:30
         -- { id = 211, displayName = 'Role Reversal',    job = 'PUP', level = 75 },  -- cd:02:00
         -- { id = 212, displayName = 'Ventriloquy',      job = 'PUP', level = 75 },  -- cd:01:00
