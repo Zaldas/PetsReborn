@@ -535,7 +535,6 @@ return {
                 '#F7EFC2FF',  -- 7 light
                 '#8A72C4FF',  -- 8 dark
             },
-            estimatedColor = '#C8A860FF',  -- text: derived, not measured (~ prefix); outranks the ramp
 
             -- Percentage colour is by RISK, not by element. Keyed on pet.maneuver[N].norm,
             -- which is pct/100 clamped to 0..1, so `below = 0.40` is exactly "under 40%
@@ -555,18 +554,16 @@ return {
             -- [2] = 0: no vertical adjustment; the line sits on pip 1's own top edge.
             -- pctAlign owns the alignment for this element, so txt.align is not read.
             -- gdifonts aligns AT the anchor and never clips, so nothing here is a clip rect:
-            -- an estimated three-digit value ('~230%') simply runs further left. Overload
-            -- chance reaches ~230 -- the server clamps at 255 and Overdrive estimates stack
-            -- past 100 -- which is what columnWidth is sized for.
+            -- a three-digit value ('230%') simply runs further left. Overload chance
+            -- reaches ~230 -- the server clamps at 255 -- which is what columnWidth is
+            -- sized for.
             pctOffset = {-7, 0},
             pctAlign  = 'right',
 
-            -- string.format patterns taking the integer chance. '~' marks a derived figure --
-            -- an Overdrive worst-case add or the Activate spawn seed -- so an estimate never
-            -- reads as a measurement. A pattern string.format rejects falls back to these
-            -- values; it is validated once at create, never on the render path.
-            pctFormat       = '%d%%',
-            estimatedFormat = '~%d%%',
+            -- string.format pattern taking the integer chance. A pattern string.format
+            -- rejects falls back to this value; it is validated once at create, never on
+            -- the render path.
+            pctFormat = '%d%%',
 
             -- Font only: position comes from pctOffset and alignment from pctAlign, so this
             -- block carries neither pos nor align.

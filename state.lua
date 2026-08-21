@@ -62,7 +62,6 @@ do
             count     = prefix .. '.count',
             active    = prefix .. '.active',
             burdened  = prefix .. '.burdened',
-            estimated = prefix .. '.estimated',
             element   = prefix .. '.element',
             remaining = prefix .. '.remaining',
         }
@@ -158,6 +157,7 @@ local State = {
         overdriveOn       = false,
         overloadOn        = false,
         overloadRemaining = 0,               -- derived from burdenModel each frame, like odRemaining
+        heatsink          = false,           -- Heatsink attached; the only BURDEN_DECAY source
     },
     bst = {
         stayExpiry = nil,   -- os.time() of current Stay tick expiry; nil = inactive
@@ -480,22 +480,20 @@ function State.buildTokenTable(s)
     -- when petType is nil. data.lua reads these ahead of every pet-presence early return and
     -- zeroes them all when the player owns no automaton, so the fields are already correct for
     -- every pet type.
-    -- pct is the server's last reported overload chance decayed 1 per 3s, not a computed
-    -- chance, and is left uncapped: the server clamps its own report to 0..255 and Overdrive
-    -- estimates stack past 100. norm is clamped because it drives a bar fill.
+    -- pct is the server's last reported overload chance less the burden decayed since, not a
+    -- computed chance, and is left uncapped: the server clamps its own report to 0..255, so a
+    -- reading above 100 is real. norm is clamped because it drives a bar fill.
     local a     = s.automaton
-    local now   = os.time()
     local model = a.burdenModel
     for i = 1, MANEUVER_COUNT do
         local keys  = MANEUVER_KEYS[i]
-        local pct   = model.displayPct(i, now)   -- dot call: a colon passes the model as `index`
+        local pct   = model.displayPct(i)   -- dot call: a colon passes the model as `index`
         local count = a.maneuverCounts[i] or 0
         t[keys.pct]       = pct
         t[keys.norm]      = math.min(pct / 100, 1)
         t[keys.count]     = count
         t[keys.active]    = count > 0
         t[keys.burdened]  = pct > 0
-        t[keys.estimated] = model.isEstimated(i) == true
         t[keys.element]   = maneuvers.elements[i].name   -- identity, not state
         -- Whole seconds, never nil: 0 covers both "none up" and "no timer known".
         t[keys.remaining] = a.maneuverRemaining[i] or 0

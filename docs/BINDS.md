@@ -335,20 +335,18 @@ percentage lands on that point, and owns alignment for the element, so `txt.alig
 
 ---
 
-### `pctFormat`, `estimatedFormat` -- percentage text
+### `pctFormat` -- percentage text
 
 ```lua
-pctFormat       = '%d%%',
-estimatedFormat = '~%d%%',
+pctFormat = '%d%%',
 ```
 
-`string.format` patterns taking the integer chance. `estimatedFormat` is used when
-`pet.maneuver[N].estimated` is true. Both are validated once at create and fall back to the
-defaults above if `string.format` rejects them.
+`string.format` pattern taking the integer chance. Validated once at create and falls back to
+the default above if `string.format` rejects it.
 
 ---
 
-### `elementColors`, `estimatedColor`, `thresholds` -- colour
+### `elementColors`, `thresholds` -- colour
 
 ```lua
 elementColors = {
@@ -356,7 +354,6 @@ elementColors = {
     '#A6DCEEFF',  -- 2 ice
     -- ... 3 wind, 4 earth, 5 thunder, 6 water, 7 light, 8 dark
 },
-estimatedColor = '#C8A860FF',
 thresholds = {
     { below = 0.40, color = '#F0E6C8FF' },
     { below = 1.01, color = '#FFAE32FF' },   -- catch-all, not a `default` key
@@ -364,7 +361,6 @@ thresholds = {
 ```
 
 `elementColors` is indexed 1-8 in element order and is applied in both pip states.
-`estimatedColor` colours the percentage for a derived figure and outranks the threshold ramp.
 `thresholds` colours the percentage and is keyed on `pet.maneuver[N].norm`.
 
 The ramp must end in a `{ below = 1.01 }` catch-all rather than carrying a `default` key: selene's

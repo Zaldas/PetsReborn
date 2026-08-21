@@ -25,6 +25,7 @@ packets.ID = {
 --   0x05 uint8   IsSubJob
 --   0x08 uint8   Head
 --   0x09 uint8   Frame
+--   0x0A uint8   Attachments[12]
 --   0x68 uint16  HP
 --   0x6A uint16  MaxHP
 --   0x6C uint16  MP
@@ -222,6 +223,9 @@ function packets.handlePacketIn(e, State, activeModule)
             a.maxHp = parsed.maxHp
             a.mp    = parsed.mp
             a.maxMp = parsed.maxMp
+            -- Sets the burden decay rate. Re-sent whenever the automaton's updatemask
+            -- changes, so an attachment swap lands without a reload.
+            a.heatsink = parsed.heatsink
         end
         return
     end
@@ -357,47 +361,23 @@ function packets.handlePacketIn(e, State, activeModule)
                             end
                             local message = result and result.message
                             local now     = os.time()
-                            -- The message decides, not overdriveOn. A 799 is only emitted
-                            -- when burden cleared a normal threshold, which proves Overdrive
-                            -- was not active server-side -- so param is measured truth even
-                            -- if GetBuffs() still reports buff 166 for a frame afterwards.
                             if result and message == maneuvers.MSG_OVERLOADED then
-                                burdenModel.stamp(element.index, result.param, now)
+                                burdenModel.stamp(element.index, result.param)
                                 burdenModel.setOverload(result.param, now)
                             elseif result and message == maneuvers.MSG_OVERLOAD_CHANCE then
-                                -- Both Overdrive sources are needed: overdriveOn comes from
-                                -- GetBuffs() and so lags this packet by at least a frame at
-                                -- onset, while odExpireTime (set from the OVERDRIVE_ABILITY
-                                -- branch above) is nil when the addon loads mid-Overdrive.
-                                -- param confirms them against the server: OVERLOAD_THRESH
-                                -- +5000 against a uint8 burden clamps the reported chance to
-                                -- exactly 0 for the whole of a real Overdrive, so a non-zero
-                                -- param means both flags are stale and the server has handed
-                                -- us a measured number.
-                                local odExpiry  = State.automaton.odExpireTime
-                                local overdrive = State.automaton.overdriveOn
-                                    or (odExpiry ~= nil and odExpiry > now)
-                                if overdrive and result.param == 0 then
-                                    -- The reported 0% carries no information here, so
-                                    -- substitute the worst-case add for this element.
-                                    local worstAdd
-                                    if element.isDark then
-                                        worstAdd = burdenModel.WORST_ADD_DARK
-                                    else
-                                        worstAdd = burdenModel.WORST_ADD
-                                    end
-                                    burdenModel.stampEstimated(element.index, worstAdd, now)
-                                else
-                                    burdenModel.stamp(element.index, result.param, now)
-                                end
+                                -- Taken at face value, Overdrive included. OVERLOAD_THRESH
+                                -- +5000 clamps the reported chance to 0 for the whole of an
+                                -- Overdrive while burden keeps climbing, so the column reads
+                                -- clean through that window and re-anchors on the first
+                                -- report after it drops.
+                                burdenModel.stamp(element.index, result.param)
                             end
                         elseif abilityId == maneuvers.ACTIVATE_ABILITY then
                             -- A fresh automaton spawns with burden in every element, not at
-                            -- 0, so the baseline is SPAWN_PCT and resetAll flags it
-                            -- estimated. Overload is not cleared here: the Overload buff is
-                            -- the authority and it outlives the automaton, so data.lua
-                            -- reconciles it.
-                            burdenModel.resetAll(os.time(), burdenModel.SPAWN_PCT)
+                            -- 0, so the baseline is SPAWN_PCT. Overload is not cleared here:
+                            -- the Overload buff is the authority and it outlives the
+                            -- automaton, so data.lua reconciles it.
+                            burdenModel.resetAll(burdenModel.SPAWN_PCT)
                         end
                     end
                 end
@@ -473,8 +453,14 @@ function packets._parseExtJobPup(data)
     if not data or #data < EXT_JOB_MIN_BYTES then return nil end
 
     local job, hp, maxHp, mp, maxMp
+    local heatsink = false
     local ok = pcall(function()
         job   = data:byte(0x04 + 1)
+        for slot = 0, 11 do
+            if data:byte(0x0A + slot + 1) == maneuvers.HEATSINK_ATTACHMENT_ID then
+                heatsink = true
+            end
+        end
         hp    = struct.unpack('H', data, 0x68 + 1)
         maxHp = struct.unpack('H', data, 0x6A + 1)
         mp    = struct.unpack('H', data, 0x6C + 1)
@@ -483,7 +469,7 @@ function packets._parseExtJobPup(data)
     if not ok or job ~= EXT_JOB_PUP then return nil end
     if not maxHp or maxHp == 0 or not maxMp then return nil end
 
-    return { hp = hp, maxHp = maxHp, mp = mp, maxMp = maxMp }
+    return { hp = hp, maxHp = maxHp, mp = mp, maxMp = maxMp, heatsink = heatsink }
 end
 
 -- Pure parse: extracts cmd_no and abilityId from the 0x0028 action packet's

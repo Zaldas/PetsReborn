@@ -239,6 +239,7 @@ local function refreshManeuverBuffs(State, player, ownsAutomaton, recastCache)
         a.overloadOn        = false
         a.overdriveOn       = false
         a.overloadRemaining = 0
+        a.burdenModel.resetClock()
         return
     end
 
@@ -311,6 +312,12 @@ local function refreshManeuverBuffs(State, player, ownsAutomaton, recastCache)
 
     -- Dot calls, never colon: a colon passes the model table as the first argument.
     local model = a.burdenModel
+
+    -- Heatsink makes the decay rate depend on the live Water Maneuver count, so burden
+    -- cannot be derived from the age of a stamp -- the model integrates it here instead,
+    -- once a frame.
+    model.advance(now, a.heatsink, a.maneuverCounts[maneuvers.HEATSINK_ELEMENT_INDEX])
+
     if overloadOn then
         a.overloadRemaining = model.overloadRemaining(now)
     else

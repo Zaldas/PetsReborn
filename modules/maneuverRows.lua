@@ -71,7 +71,6 @@ local DEFAULT_PCT_ALIGN = 'right'
 -- patterns taking the integer chance. '~' marks a derived figure: an Overdrive worst-case
 -- add or the Activate spawn seed.
 local DEFAULT_PCT_FORMAT       = '%d%%'
-local DEFAULT_ESTIMATED_FORMAT = '~%d%%'
 
 -- A layout format string reaches string.format on the d3d_present path, where a pattern
 -- string.format rejects ('%d %d') throws on every visible frame. Validated once at create,
@@ -127,14 +126,12 @@ function ManeuverRows.new()
     local frameH  = 0
 
     local elementColors  = {}
-    local estimatedColor = nil        -- nil = layout declares none; estimates fall to the ramp
     local pctBaseColor   = WHITE      -- txt.color, parsed once; the ramp's non-nil fallback
     local recastColor    = WHITE      -- recastTxt.color, parsed once
     local overloadColor  = nil        -- recastTxt.overloadColor; nil = reuse recastColor
     local readyLabel     = nil        -- recastTxt.readyLabel; nil = show the formatted timer
 
     local pctFormat       = DEFAULT_PCT_FORMAT        -- validated once in create
-    local estimatedFormat = DEFAULT_ESTIMATED_FORMAT
 
     -- { threshold, period, floor }, resolved once in create; nil = the layout wants no pulse.
     local blink = nil
@@ -334,7 +331,6 @@ function ManeuverRows.new()
         pctAlign = resolvePctAlign(L.pctAlign)
         computeMetrics(L)
 
-        estimatedColor = Utils.hexToColor(L.estimatedColor)
         -- The ramp's fallback is the text's own authored colour. All three bundled layouts end
         -- their ramp in a `{ below = 1.01 }` catch-all -- selene's mixed_table rule rejects the
         -- `default` key resolveThreshold would otherwise accept -- so this only fires for a
@@ -355,7 +351,6 @@ function ManeuverRows.new()
         end
 
         pctFormat       = resolveFormat(L.pctFormat,       DEFAULT_PCT_FORMAT)
-        estimatedFormat = resolveFormat(L.estimatedFormat, DEFAULT_ESTIMATED_FORMAT)
         blink           = resolveBlink(L.blink)
 
         -- A missing PNG degrades silently: sprites.lua returns a nil texture and the render
@@ -448,7 +443,6 @@ function ManeuverRows.new()
                     pct       = prefix .. '.pct',
                     norm      = prefix .. '.norm',
                     count     = prefix .. '.count',
-                    estimated = prefix .. '.estimated',
                     remaining = prefix .. '.remaining',
                 },
             }
@@ -600,11 +594,10 @@ function ManeuverRows.new()
         end
 
         for i = 1, #rows do
-            local row        = rows[i]
-            local keys       = row.keys
-            local count      = tokens[keys.count] or 0
-            local isEstimate = tokens[keys.estimated] == true
-            local color      = elementColors[i]
+            local row   = rows[i]
+            local keys  = row.keys
+            local count = tokens[keys.count] or 0
+            local color = elementColors[i]
 
             -- Filled with a maneuver up, outline without. The element colour is on the main pip
             -- in both states, so nothing in the strip ever greys out.
@@ -658,24 +651,15 @@ function ManeuverRows.new()
             if pctText then
                 local pct = math.floor(tokens[keys.pct] or 0)
                 if pct > 0 then
-                    -- The '%' suffix and the '~' estimate marker come from the layout's
-                    -- format pattern.
-                    if isEstimate then
-                        pctText:update(string.format(estimatedFormat, pct))
-                    else
-                        pctText:update(string.format(pctFormat, pct))
-                    end
+                    -- The '%' suffix comes from the layout's format pattern.
+                    pctText:update(string.format(pctFormat, pct))
 
                     -- Colour is by overload RISK, not by element: the pips carry the
-                    -- element identity, the numbers carry the danger. estimatedColor outranks
-                    -- the ramp, so a derived figure is never masked by a threshold hit.
-                    if isEstimate and estimatedColor then
-                        pctText:color(estimatedColor)
-                    elseif thresholds then
+                    -- element identity, the numbers carry the danger.
+                    if thresholds then
                         -- pctBaseColor is an already parsed colour table and the non-nil
                         -- fallback: a ramp with no catch-all and no thresholds.default would
-                        -- otherwise resolve to nil and leave the last colour stuck on,
-                        -- including a stale estimatedColor.
+                        -- otherwise resolve to nil and leave the last colour stuck on.
                         pctText:color(Utils.resolveThreshold(thresholds, tokens[keys.norm] or 0, pctBaseColor))
                     else
                         pctText:color(pctBaseColor)

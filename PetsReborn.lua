@@ -368,11 +368,11 @@ local function populateFakeState(petType)
         end
         a.burdenModel = debugBurdenModel
 
-        -- Re-stamped at `now` every frame so displayPct's decay never advances: a preview
-        -- holds still. Stamping mutates in place and allocates nothing.
+        -- Re-stamped every frame so decay never accumulates against these entries: a
+        -- preview holds still. Stamping mutates in place and allocates nothing.
         local burdenNow = os.time()
         for i, pct in pairs(DEBUG_MANEUVER_PCT) do
-            debugBurdenModel.stamp(i, pct, burdenNow)
+            debugBurdenModel.stamp(i, pct)
         end
 
         -- The countdown reads a.overloadRemaining above, but pet.overloadTimer renders '--'

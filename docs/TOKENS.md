@@ -373,7 +373,6 @@ Overload outlives the automaton, so these keep counting down after Deactivate.
 | `pet.maneuver[N].count` | number | How many maneuvers of that element are active |
 | `pet.maneuver[N].active` | bool | `count > 0` |
 | `pet.maneuver[N].burdened` | bool | `pct > 0` |
-| `pet.maneuver[N].estimated` | bool | Figure is derived, not server-reported |
 | `pet.maneuver[N].element` | string | `'fire'`, `'ice'`, `'wind'`, `'earth'`, `'thunder'`, `'water'`, `'light'`, `'dark'` |
 | `pet.maneuver[N].remaining` | number | Seconds until the soonest maneuver of that element drops; 0 = none up or unknown |
 
@@ -392,11 +391,12 @@ Column-wide tokens:
 | `pet.overloadTimer` | string | `'--'`, `'0:00'`, or `'M:SS'` |
 | `pet.overdriveActive` | bool | Overdrive is on the player |
 
-`pct` is the server's reported overload chance, decayed 1 point per 3s tick. The addon never
-computes it.
+`pct` is the server's reported overload chance, less the burden decayed since it was reported.
+The addon never computes a chance. Decay is 1 point per 3s tick, plus 1 per active Water
+Maneuver while Heatsink is attached.
 
-`estimated` is true for figures the addon derived rather than read: the Activate spawn seed, and
-Overdrive accumulation, where the server reports a useless 0.
+During Overdrive the server reports 0 for every maneuver, so the column reads clean through that
+window and re-anchors on the first report after it drops.
 
 `pct` and `count` are independent -- an element can carry burden with no maneuver up.
 
