@@ -8,6 +8,7 @@ local targetFrameModule   = require('elements/targetFrame')
 local statusEffectsModule = require('modules/statusEffects')
 local Utils               = require('utils')
 local data                = require('data')
+local petAbilities        = require('data/petAbilities')
 local chat                = require('chat')
 local avatarModule    = require('modules/avatar')
 local wyvernModule    = require('modules/wyvern')
@@ -291,7 +292,7 @@ function petFrame.switchModule(newType, savedVis)
             slots[i] = slot
         end
 
-        local MAX_RECAST_SLOTS = 6
+        local MAX_RECAST_SLOTS = petAbilities.MAX_ROWS
         if #slots > MAX_RECAST_SLOTS then
             print(chat.header(addon.name) .. chat.warning(string.format('%s has %d recast slots, showing only the first %d', newType, #slots, MAX_RECAST_SLOTS)))
             for i = #slots, MAX_RECAST_SLOTS + 1, -1 do
@@ -319,6 +320,21 @@ function petFrame.setRecastVisible(petType, id, val)
     end
 end
 
+-- Whether the frame's background should be drawn at all.
+--
+-- With a pet out it always is. Without one, alwaysShow leaves only the recast rows that survive
+-- the pet-presence gate, plus what core.lua keeps counting down past the pet: the 2hr timer and
+-- the PUP Overload banner, which both outlive a Deactivate. With none of those the background
+-- would be an empty box.
+local function backgroundVisible(tokens, rowCount)
+    if tokens['pet.active'] == true then return true end
+    if tokens['pet.alwaysShow'] ~= true then return false end
+    if tokens['pet.timerActive'] == true or tokens['pet.overloadActive'] == true then
+        return true
+    end
+    return tokens['ui.showRecasts'] ~= false and rowCount > 0
+end
+
 function petFrame.update(tokens)
     local newAlwaysShow = tokens['pet.alwaysShow'] == true
     if newAlwaysShow ~= currentAlwaysShow then
@@ -343,10 +359,6 @@ function petFrame.update(tokens)
         relayout(currentVis)
     end
 
-    if bg then
-        local active = tokens['pet.active'] == true or tokens['pet.alwaysShow'] == true
-        if active then bg:show(VIS_TOKEN) else bg:hide(VIS_TOKEN) end
-    end
     coreModule.update(tokens)
     if activeModule then activeModule.update(tokens) end
 
@@ -358,6 +370,12 @@ function petFrame.update(tokens)
     if rowCount ~= lastRowCount then
         lastRowCount = rowCount
         relayout(currentVis)
+    end
+
+    -- Drawn after the row count is known, because in alwaysShow the row count is the only
+    -- thing that decides whether the frame has anything in it.
+    if bg then
+        if backgroundVisible(tokens, rowCount) then bg:show(VIS_TOKEN) else bg:hide(VIS_TOKEN) end
     end
     statusEffectsModule.update(tokens)
     targetFrameModule.update(tokens)

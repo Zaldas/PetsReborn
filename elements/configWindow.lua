@@ -4,6 +4,7 @@
 
 local imgui       = require('imgui')
 local petAbilities = require('data/petAbilities')
+local automatonIcd = require('modules/automatonIcd')
 local layoutEditor = require('libs/spui/layoutEditor')
 
 local M = {}
@@ -22,8 +23,36 @@ local HP_DISPLAY_MODES = { 'value', 'percent' }
 local TAB_WIDTHS = {
     General = 240,
     Display = 240,
+    Automaton = 240,
     Layout = 300,
 }
+
+-- A tab bar too wide for its window is clipped and scrolled, not wrapped, so tabs fall off the
+-- right edge and become unreachable. These size the floor that stops that.
+--
+-- ImGui lays a tab out as its label plus FramePadding.x * 2, with ItemInnerSpacing.x between
+-- tabs. The style those come from is not reachable from Lua here, so these are the default
+-- theme's values -- they only have to be generous enough to stop the clipping.
+local TAB_PADDING     = 20
+local TAB_SPACING     = 4
+local WINDOW_CHROME   = 16
+local TAB_BAR_MIN     = 300   -- used when CalcTextSize is unavailable to measure with
+
+-- Driven by TAB_WIDTHS rather than a second list of names, so a tab added there widens the
+-- floor with it. The sum does not care what order pairs() hands them back in.
+local function minTabBarWidth()
+    if imgui.CalcTextSize == nil then
+        return TAB_BAR_MIN
+    end
+
+    local total = WINDOW_CHROME
+    for name in pairs(TAB_WIDTHS) do
+        local labelWidth = imgui.CalcTextSize(name)
+        total = total + labelWidth + TAB_PADDING + TAB_SPACING
+    end
+
+    return total
+end
 
 -- Returns true if the file's header comment block contains the literal
 -- substring '@unsupported' within its first 10 lines.
@@ -156,6 +185,7 @@ function M.draw(prSettings, cb, debugViewType)
     if currentTab == 'Layout' and layoutEditor.isRegistered() and layoutEditor.getSuggestedWidth then
         windowWidth = layoutEditor.getSuggestedWidth()
     end
+    windowWidth = math.max(windowWidth, minTabBarWidth())
     imgui.SetNextWindowSize({windowWidth, 0}, 1)  -- per-tab width; height=0 auto-fits content
 
     local visible = { true }
@@ -385,7 +415,7 @@ function M.draw(prSettings, cb, debugViewType)
 
                 for _, typeEntry in ipairs(RECAST_TYPES) do
                     local petType  = typeEntry.key
-                    local abilities = petAbilities[petType] or {}
+                    local abilities = petAbilities.slots[petType] or {}
                     if #abilities > 0 then
                         imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
                         if imgui.TreeNode(typeEntry.label) then
@@ -397,19 +427,55 @@ function M.draw(prSettings, cb, debugViewType)
                                     cb.onRecastVisible(petType, slot.id, slotVis[1])
                                 end
                             end
+                            -- Gate rows are read off the live head and frame, so the list is
+                            -- empty until a 0x0044 has said what is fitted. Attachment
+                            -- abilities are listed in their own section instead, which offers
+                            -- all of them regardless of what is equipped.
+                            if petType == 'automaton' then
+                                for _, slot in ipairs(automatonIcd.slots()) do
+                                    if not slot.isAttachment then
+                                        imgui.SetCursorPosX(imgui.GetCursorPosX() + indent * 2)
+                                        local slotVis = { typeVis[tostring(slot.id)] ~= false }
+                                        if imgui.Checkbox(slot.displayName .. '##rc_' .. petType .. '_' .. slot.id, slotVis) then
+                                            cb.onRecastVisible(petType, slot.id, slotVis[1])
+                                        end
+                                    end
+                                end
+                            end
                             imgui.TreePop()
                         end
                     end
                 end
 
-                imgui.Spacing()
+                imgui.EndTabItem()
+            end
 
-                -- Automaton ---------------------------------------------
+            -- ============================================================
+            -- Automaton tab: PUP-only settings and the attachment recasts.
+            -- ============================================================
+            if imgui.BeginTabItem('Automaton') then
+                currentTab = 'Automaton'
+
+                -- General -----------------------------------------------
                 drawGradientHeader(
-                    'Automaton',
+                    'General',
                     availW,
                     'Settings that apply to the PUP automaton only.'
                 )
+
+                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
+                local showIcd = { prSettings.showAutomatonIcd ~= false }
+                if imgui.Checkbox('Internal cooldowns', showIcd) then
+                    cb.onShowAutomatonIcd(showIcd[1])
+                end
+                if imgui.IsItemHovered() then
+                    imgui.SetTooltip(
+                        'Show the automaton\'s own action gates: the magic cooldowns its head\n' ..
+                        'sets, and the recasts of its attachment abilities.\n' ..
+                        'Neither is in client memory, so both are timed from the automaton\'s\n' ..
+                        'own actions, and read Ready until one has been seen.'
+                    )
+                end
 
                 imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
                 imgui.Text('HP readout:')
@@ -436,6 +502,38 @@ function M.draw(prSettings, cb, debugViewType)
                         if selected then imgui.SetItemDefaultFocus() end
                     end
                     imgui.EndCombo()
+                end
+
+                imgui.Spacing()
+
+                -- Attachments -------------------------------------------
+                drawGradientHeader(
+                    'Attachments',
+                    availW,
+                    'Recasts of the abilities attachments grant.\n' ..
+                    'Every one is listed here whether or not it is fitted. A row reaches the\n' ..
+                    'pet window only when the attachment is equipped AND ticked below, so\n' ..
+                    'ticking one now decides what shows the next time it is on the automaton.'
+                )
+
+                -- Reached without the Display tab having been opened, so this cannot lean on
+                -- the Recasts section having seeded recastVisible.
+                local recastVisible = prSettings.recastVisible or {}
+                local attachmentVis = recastVisible.automaton or {}
+                for _, slot in ipairs(automatonIcd.attachmentOptions()) do
+                    imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
+                    local slotVis = { attachmentVis[tostring(slot.id)] ~= false }
+                    if imgui.Checkbox(slot.displayName .. '##at_' .. slot.id, slotVis) then
+                        cb.onRecastVisible('automaton', slot.id, slotVis[1])
+                    end
+                    imgui.SameLine()
+                    imgui.TextDisabled('(?)')
+                    if imgui.IsItemHovered() then
+                        -- Naming the ability explains nothing when it carries the attachment's
+                        -- own name, so those four describe what it does instead.
+                        imgui.SetTooltip(slot.effect
+                            or string.format('Casts %s.', slot.ability))
+                    end
                 end
 
                 imgui.EndTabItem()

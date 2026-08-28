@@ -7,6 +7,8 @@ local socket = require('socket')
 local abilityRecast = require('libs/ashita/abilityrecast')
 local charmGear     = require('data/charmGear')
 local maneuvers     = require('data/maneuvers')
+local automatonIcd  = require('modules/automatonIcd')
+local petAbilities  = require('data/petAbilities')
 local statusHelpers = require('libs/status/statushelpers')
 
 -- Job IDs (only pet-granting jobs needed)
@@ -33,9 +35,8 @@ local EMPTY_RECAST_ENTRY = { recast = 0 }
 local frameRecastCache = nil
 
 -- Pre-allocated recast row pool: getAbilityRecasts() runs every frame while a pet
--- is active, so rows are reused in place. MAX_RECAST_SLOTS is duplicated in state.lua;
--- the two must stay in step.
-local MAX_RECAST_SLOTS = 6
+-- is active, so rows are reused in place.
+local MAX_RECAST_SLOTS = petAbilities.MAX_ROWS
 local recastRowPool = {}
 for i = 1, MAX_RECAST_SLOTS do
     recastRowPool[i] = {
@@ -104,7 +105,7 @@ local JUG_PET_LIST = require('data/jugPets')
 
 -- Ability slot definitions per pet type: loaded from data/petAbilities.lua.
 -- Add new pet types or abilities there without modifying this file.
-data.abilitySlots = require('data/petAbilities')
+data.abilitySlots = petAbilities.slots
 
 -- Initialize: build jug pet lookup tables
 function data.init()
@@ -182,18 +183,24 @@ function data.getPetJobLevel(petType)
     return 99
 end
 
--- Level-filtered slot list for petType, rebuilt only when the owning job's level changes.
+-- Level-filtered slot list for petType, rebuilt only when the owning job's level changes --
+-- or, for the automaton, when its equipment changes the internal-cooldown rows.
 -- Every consumer must index THIS list: pet.recast[N] tokens are written by position, so a
 -- consumer that filters differently shifts each row's label and timer against each other.
-local filteredSlotCache = {}   -- [petType] = { level = n, slots = {...} }
+local filteredSlotCache = {}   -- [petType] = { key = 'n', slots = {...} }
 
 function data.getFilteredSlots(petType)
     local allSlots = data.abilitySlots[petType]
     if not allSlots then return nil end
 
-    local level  = data.getPetJobLevel(petType)
+    local level = data.getPetJobLevel(petType)
+    local key   = tostring(level)
+    if petType == 'automaton' then
+        key = key .. '|' .. automatonIcd.signature()
+    end
+
     local cached = filteredSlotCache[petType]
-    if cached and cached.level == level then return cached.slots end
+    if cached and cached.key == key then return cached.slots end
 
     local slots = {}
     for _, slot in ipairs(allSlots) do
@@ -201,7 +208,16 @@ function data.getFilteredSlots(petType)
             slots[#slots + 1] = slot
         end
     end
-    filteredSlotCache[petType] = { level = level, slots = slots }
+
+    -- Appended, not level-filtered: an internal cooldown exists for whatever head and
+    -- attachments are fitted, at any level that can fit them.
+    if petType == 'automaton' then
+        for _, slot in ipairs(automatonIcd.slots()) do
+            slots[#slots + 1] = slot
+        end
+    end
+
+    filteredSlotCache[petType] = { key = key, slots = slots }
     return slots
 end
 
@@ -685,10 +701,24 @@ function data.getAbilityRecasts(petType, recastCache)
     local slotCount = math.min(#slots, MAX_RECAST_SLOTS)
 
     local cache = recastCache or abilityRecast.scanAll()   -- single 31-slot pass for this frame
+    local now   = socket.gettime()
     for i = 1, slotCount do
         local slot = slots[i]
         local row = recastRowPool[i]
-        if slot.isChargeAbility then
+        if slot.isIcd then
+            -- The automaton's internal cooldowns are absent from recast memory; automatonIcd
+            -- times them from its actions instead. Filled in like a plain ability row.
+            local remaining, ready = automatonIcd.state(slot, now)
+            row.name            = slot.displayName
+            row.remaining       = remaining
+            row.max             = 0
+            row.norm            = 0
+            row.ready           = ready
+            row.charges         = 0
+            row.maxCharges      = 0
+            row.isChargeAbility = nil
+            row.isHealTimer     = nil
+        elseif slot.isChargeAbility then
             -- Charge-based ability (e.g. Ready): compute charges from raw timer.
             -- RecastCalc2 (modifier) stores the effective per-charge recast time in seconds.
             local entry      = cache[slot.id] or EMPTY_CHARGE_ENTRY

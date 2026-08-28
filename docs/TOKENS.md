@@ -88,10 +88,15 @@ tp = {
 Registered anchors (populated at init, updated during relayout):
 - `name` — name text element (registered if `name` section present)
 - `hp` — HP bar origin (registered if `hp` section present)
-- `mp` — MP bar origin (avatar and automaton only; nil when MP hidden or type inactive)
+- `mp` — MP bar origin (avatar, automaton and charm; nil when MP hidden or type inactive)
 - `tp` — TP bar origin (nil when TP hidden or `tp` section absent)
+- `name` — pet name row (registered if `name` section present)
+- `distance` — distance readout (registered if `distance` section present)
 - `petTimer` — 2hr/familiar countdown timer (registered if `petTimer` section present)
-- `stay` — BST Stay counter (charm only; nil when Stay counter hidden or `stay` section absent)
+- `special` — 2hr banner label (registered if `special` section present)
+- `overload` — PUP Overload banner (registered if `overload` section present)
+- `maneuvers` — PUP maneuver column origin (nil when the column is switched off)
+- `statusEffects` — status icon strip origin (registered if `statusEffects` section present)
 - `recast` — first recast row position (nil if `recast` section absent)
 - `window` — full window bounds `{x=0, y=0, h=layoutHeight}`; always registered; used by `targetBar` anchor (`window.bottom`)
 
@@ -249,7 +254,14 @@ Available when `target.active == true` (pet has an active target that is not its
 
 ### Virtual Recast Tokens
 
-Routed from the active type's specific recast array. Slots N = 1–6.
+Routed from the active type's specific recast array. Slots N = 1–23.
+
+Slot order is the declaration order in `data/petAbilities.lua`, compacted by the level filter --
+an ability the job has not learned takes no slot, so the ones below it move up. Bind by slot
+position, not by expecting a fixed ability at a fixed index.
+
+Only the automaton reaches past slot 6: its six abilities are followed by the internal-cooldown
+rows, which are one row per head magic gate and one per equipped attachment ability.
 
 | Token | Resolves to |
 |-------|------------|
@@ -261,27 +273,27 @@ Routed from the active type's specific recast array. Slots N = 1–6.
 | `pet.recast[N].maxCharges` | int (0 for non-charge abilities) |
 | `pet.recast[N].active` | bool — slot N is populated for the current type |
 
+The same seven keys exist under each type's own prefix -- `avatar.recast[N].name`,
+`jug.recast[N].charges` and so on -- for every type, whether or not that type ever populates
+them. The per-type sections below list only what is specific to each; they do not re-list the
+key set.
+
 ---
 
 ### Avatar Tokens (SMN)
 
-Available when `pet.type == 'avatar'`. Slots N = 1–6.
+Available when `pet.type == 'avatar'`. Two slots, in order: BP: Rage, BP: Ward.
 
-| Token | Type | Value |
-|-------|------|-------|
-| `avatar.recast[N].name` | string | `'BP: Rage'`, `'BP: Ward'`, etc. or `''` |
-| `avatar.recast[N].time` | string | `'1:30'` or `'Ready'` |
-| `avatar.recast[N].norm` | number 0–1 | Recharge progress (1 = ready) |
-| `avatar.recast[N].ready` | bool | Recast == 0 |
-| `avatar.recast[N].charges` | number | Always 0 (avatar BPs are not charge abilities in v1) |
-| `avatar.recast[N].maxCharges` | number | Always 0 |
-| `avatar.recast[N].active` | bool | Slot N is populated |
+Neither is a charge ability, so `charges` and `maxCharges` are always 0. Avatar rows carry no
+`requiresPet` flag -- SMN summons by spell, so gating the list would leave an empty frame.
 
 ---
 
 ### Jug Pet Tokens (BST Jug)
 
-Available when `pet.type == 'jug'`. Slots N = 1–3 (Ready / Reward / Call Beast).
+Available when `pet.type == 'jug'`. Five slots at level 25+, in order: Reward, Stay, Call
+Beast, Charm, Ready. Below that the level filter drops the ones not yet learned and the rest
+move up.
 
 | Token | Type | Value |
 |-------|------|-------|
@@ -290,18 +302,18 @@ Available when `pet.type == 'jug'`. Slots N = 1–3 (Ready / Reward / Call Beast
 | `jug.remainingNorm` | number 0–1 | `remaining / duration` |
 | `jug.elapsed` | string | `''` (not implemented in v1) |
 | `jug.expired` | bool | `true` when `os.time() >= expireTime` |
-| `jug.recast[1].name` | string | `'Ready'` |
-| `jug.recast[1].charges` | number | 0–3 (charge ability) |
-| `jug.recast[1].maxCharges` | number | 3 |
-| `jug.recast[N].name` | string | `'Reward'`, `'Call Beast'` for N=2,3 |
-| `jug.recast[N].ready` | bool | |
-| `jug.recast[N].active` | bool | |
+
+Ready is a charge ability: it is the only jug row where `charges`/`maxCharges` are non-zero
+(0–3 of 3). Stay is a display-only row -- its `time` is `''` and the renderer reads
+`bst.stayTicks` instead.
 
 ---
 
 ### Charm Tokens (BST Charmed Mob)
 
-Available when `pet.type == 'charm'`.
+Available when `pet.type == 'charm'`. Five slots at level 25+, in order: Reward, Stay, Call
+Beast, Charm, Sic. Below that the level filter drops the ones not yet learned and the rest
+move up.
 
 | Token | Type | Value |
 |-------|------|-------|
@@ -310,10 +322,9 @@ Available when `pet.type == 'charm'`.
 | `charm.remainingNorm` | number 0–1 | `remaining / totalDuration`; 0 when unknown |
 | `charm.elapsed` | string | `''` (not implemented in v1) |
 | `charm.urgent` | bool | `true` when remaining < 60 seconds |
-| `charm.recast[1].name` | string | `'Sic'` |
-| `charm.recast[2].name` | string | `'Reward'` |
-| `charm.recast[N].ready` | bool | |
-| `charm.recast[N].active` | bool | |
+
+Stay is a display-only row -- its `time` is `''` and the renderer reads `bst.stayTicks`
+instead. No charm row is a charge ability.
 
 ---
 
@@ -332,29 +343,57 @@ The Stay recast row is always visible when the pet is active, showing `--` when 
 
 ### Wyvern Tokens (DRG)
 
-Available when `pet.type == 'wyvern'`. Slots N = 1–3 (Call Wyvern / Spirit Link / Steady Wing).
-
-| Token | Type | Value |
-|-------|------|-------|
-| `wyvern.recast[N].name` | string | Ability name |
-| `wyvern.recast[N].time` | string | `'0:30'` or `'Ready'` |
-| `wyvern.recast[N].norm` | number 0–1 | Recharge progress |
-| `wyvern.recast[N].ready` | bool | Ability available |
-| `wyvern.recast[N].active` | bool | Slot populated |
+Available when `pet.type == 'wyvern'`. Three slots at level 30+, in order: Call Wyvern,
+Spirit Link, Steady Wing. Wyvern is main-job DRG only -- `/DRG` grants no pet.
 
 ---
 
 ### Automaton Tokens (PUP)
 
-Available when `pet.type == 'automaton'`. Slots N = 1–6.
+Available when `pet.type == 'automaton'`. Six ability slots at level 40+, in order: Activate,
+Repair, Deploy, Deactivate, Retrieve, Deus Ex Automata -- followed by the internal cooldown
+rows below. No automaton row is a charge ability.
 
-| Token | Type | Value |
-|-------|------|-------|
-| `automaton.recast[N].name` | string | `'Activate'`, `'Repair'`, `'Deploy'`, etc. |
-| `automaton.recast[N].time` | string | `'0:45'` or `'Ready'` |
-| `automaton.recast[N].norm` | number 0–1 | Recharge progress |
-| `automaton.recast[N].ready` | bool | |
-| `automaton.recast[N].active` | bool | Slot populated |
+#### Internal cooldown rows
+
+Appended after the six ability slots when `showAutomatonIcd` is on, and hidden while no
+automaton is out. They use the same `recast[N]` tokens and render exactly like an ability
+recast row: `M:SS` while counting, `'Ready'` when clear.
+
+The head decides which rows exist and the order they appear in. `Latency` is the global magic
+gate -- it advances on any cast and floors every category below it -- so it always leads.
+
+| Head | Rows |
+|------|------|
+| Harlequin | Latency, Enfeeble, Heal |
+| Valoredge | Latency, Heal |
+| Sharpshot | Latency, Enfeeble, Heal |
+| Stormwaker | Latency, Enfeeble, Heal, Elemental, Enhance |
+| Soulsoother | Latency, Status, Heal, Enhance, Enfeeble |
+| Spiritreaver | Latency, Elemental, Enhance, Enfeeble |
+
+The frame decides whether they exist at all: only Harlequin and Stormwaker set the magic gates,
+and an automaton on any other frame casts nothing whatever head it wears, so no gate row is
+emitted for it. Attachment ability rows are emitted regardless of frame, one per distinct
+ability -- tiered attachments (Strobe, Shock Absorber, Heat Capacitor) share one recast and so
+share one row.
+
+Every gate is filtered behind the automaton's 3s decision tick, so a row can read `'Ready'` up
+to 3s before the automaton acts on it.
+
+`norm` is 0 on these rows, as it is on every plain ability recast, so they colour white while
+counting and green at `'Ready'` rather than running the charge-ability warn ramp.
+
+A gate only counts down from a use the addon saw, so one that has never fired reads `'Ready'`.
+An automaton picked up mid-fight -- addon loaded, or a zone line -- may really be mid-gate; its
+first action corrects the row, and only ever downward. Everything that ends an automaton (its
+entity going away, a confirmed Activate or Deus Ex Automata, an equipment change) drops the
+stamps, so one automaton's timers are never read against the next.
+
+Neither number is in client memory: the equipped head, frame and attachments come from the
+0x0044 PUP packet, and every gate is timed from the automaton's own 0x0028 action packets.
+Gate values are LSB's except where Horizon has been measured to differ -- see
+`data/automatonCooldowns.lua`.
 
 ---
 
@@ -497,7 +536,7 @@ mp = {
 | `jug.elapsed`, `charm.elapsed` | Tokens present but always `''` |
 | `bind.color = color_token` | Partially supported; `'threshold'` is the primary use |
 | No out-of-range state | `pet.hppNorm=1`, `pet.hppStr/hppPct='???'`, `pet.dist='>50'` when out of range |
-| `charm.stayActive` / `charm.stayTicks` | Actual token is `bst.stayTicks` (string, `'--'` when inactive); no bool token |
+| `charm.stayActive` / `charm.stayTicks` | Renamed to `bst.stayActive` / `bst.stayTicks` when Stay was extended to jug pets |
 | `ui.*` tokens | New — injected by orchestrator for component visibility toggles |
 | `pet.alwaysShow` | New — computed by orchestrator for always-show recast mode |
 | `pet.serverId` | New — pet entity server ID |

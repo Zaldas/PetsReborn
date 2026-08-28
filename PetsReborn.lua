@@ -28,6 +28,7 @@ local layoutEditor = require('libs/spui/layoutEditor')
 local petFrame     = require('elements/petFrame')
 local configWindow = require('elements/configWindow')
 local ManeuverBurden = require('modules/maneuverBurden')
+local automatonIcd   = require('modules/automatonIcd')
 
 -- Default settings (Ashita settings library manages config/addons/petsreborn/settings.json)
 local defaultSettings = T{
@@ -45,6 +46,7 @@ local defaultSettings = T{
     showTargetBar      = true,
     showRecasts        = true,
     showManeuvers      = true,
+    showAutomatonIcd   = true,   -- automaton head cooldown + attachment recast rows
     -- Per-ability recast visibility: [petType][abilityId] = false to hide, nil/absent = show
     recastVisible = T{
         avatar    = T{},
@@ -139,6 +141,7 @@ local debugBurdenModel = nil
 local _callbacks       = nil   -- built once; closures capture prSettings upvalue so always current
 local prevPetServerId  = 0     -- tracks last pet server ID; used for clearEntity on pet change
 local lastPlayerLevel  = -1    -- tracks player level for ability slot filtering on level sync changes
+local lastIcdSignature = nil   -- tracks automaton head/frame/attachments for internal-cooldown rows
 local isZoning         = true  -- suppresses frame until first valid data (cleared on load too)
 local zoneInReceived   = true  -- true at startup (treat as already arrived); false between 0x00B and 0x00A
 
@@ -516,6 +519,12 @@ local function buildCallbacks()
             settings.save()
             rebuildWindow()
         end,
+        -- Needs no rebuildWindow: the toggle moves automatonIcd's signature, which the
+        -- present loop already re-packs the recast rows on.
+        onShowAutomatonIcd = function(v)
+            prSettings.showAutomatonIcd = v
+            settings.save()
+        end,
         onHideStatusWhenEmpty = function(v)
             prSettings.hideStatusWhenEmpty = v
             settings.save()
@@ -659,6 +668,10 @@ ashita.events.register('d3d_present', 'petsreborn_present_cb', function()
         return
     end
 
+    -- Ahead of both paths: this decides which rows getFilteredSlots returns, and the debug
+    -- view builds its preview from that same list.
+    automatonIcd.setEnabled(prSettings.showAutomatonIcd ~= false)
+
     -- Populate State: debug writes fake data; live reads from Ashita memory.
     -- Both paths then share the same buildTokenTable -> tokens -> petFrame pipeline.
     if debugViewType then
@@ -686,6 +699,14 @@ ashita.events.register('d3d_present', 'petsreborn_present_cb', function()
             petFrame.update(HIDDEN_TOKENS)
             return
         end
+
+        -- Internal cooldowns follow the automaton entity, so one automaton's timers are never
+        -- read against the next. Live path only: the debug view must not touch real timers.
+        local icdPetId = 0
+        if State.petType == 'automaton' and State.active then
+            icdPetId = State.serverId or 0
+        end
+        automatonIcd.trackPet(icdPetId)
 
         -- alwaysShow: when pet is not active, detect type from job and populate recasts
         if prSettings.alwaysShow and not State.active then
@@ -763,7 +784,13 @@ ashita.events.register('d3d_present', 'petsreborn_present_cb', function()
     if levelChanged then lastPlayerLevel = curLevel end
 
     -- Switch type module when pet type changes or level changed (refilters slots).
-    if petFrame.getActiveType() ~= currentType or levelChanged then
+    -- The automaton's internal-cooldown rows depend on its head and attachments, which a
+    -- 0x0044 can change at any time, and the head also decides the order they render in.
+    local icdSignature = automatonIcd.signature()
+    local icdChanged   = icdSignature ~= lastIcdSignature
+    if icdChanged then lastIcdSignature = icdSignature end
+
+    if petFrame.getActiveType() ~= currentType or levelChanged or icdChanged then
         local savedVis = prSettings.recastVisible and prSettings.recastVisible[currentType]
         petFrame.switchModule(currentType, savedVis)
     end

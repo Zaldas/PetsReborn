@@ -6,6 +6,7 @@ local packets   = {}
 local socket    = require('socket')
 local dataLib   = require('data')
 local maneuvers = require('data/maneuvers')
+local automatonIcd = require('modules/automatonIcd')
 
 -- Packet IDs
 packets.ID = {
@@ -51,6 +52,16 @@ local FAMILIAR_ABILITY    = 0x18    -- Familiar ability ID (24) -- BST 2hr
 local ASTRAL_FLOW_ABILITY = 0x1E    -- Astral Flow ability ID (30) -- SMN 2hr
 local SPIRIT_SURGE_ABILITY = 0x1D   -- Spirit Surge ability ID (29) -- DRG 2hr
 local OVERDRIVE_ABILITY    = 0x87   -- Overdrive ability ID (135) -- PUP 2hr
+
+-- 0x0028 cmd_no values. The automaton's abilities always arrive as MobSkillFinish, never as
+-- AbilityFinish. The magic gate is stamped on the START, which is when the server stamps its own.
+local CMD_MAGIC_START      = 8
+local CMD_MOB_SKILL_FINISH = 11
+
+-- Low half of a cast's four-character code. An interrupted cast is re-sent under MagicStart
+-- carrying the same spell id, so only the FourCC separates it from a real cast: every cast code
+-- ends "ca", every interrupt "sp".
+local FOURCC_CAST_INTERRUPT = 0x7073
 
 -- BST pet command ability IDs (in 0x0028 action packet)
 local STAY_ABILITY  = 0x49   -- Stay  (73)
@@ -226,6 +237,9 @@ function packets.handlePacketIn(e, State, activeModule)
             -- Sets the burden decay rate. Re-sent whenever the automaton's updatemask
             -- changes, so an attachment swap lands without a reload.
             a.heatsink = parsed.heatsink
+            -- Head, frame and attachments are the only source for the internal cooldown rows:
+            -- nothing in client memory exposes what the automaton is wearing.
+            automatonIcd.setEquipment(parsed.head, parsed.frame, parsed.attachments)
         end
         return
     end
@@ -275,6 +289,20 @@ function packets.handlePacketIn(e, State, activeModule)
 
         -- Parse action for actor ID (needed for BST command / 2hr tracking below)
         local parsed = packets._parseAction(data)
+
+        -- The automaton's own actions drive its internal cooldowns.
+        if parsed and parsed.actorId ~= 0 and State.petType == 'automaton'
+            and State.active and parsed.actorId == State.serverId then
+            local petAction = packets._parseAutomatonAction(data)
+            if petAction ~= nil then
+                if petAction.kind == 'cast' then
+                    automatonIcd.onCast(petAction.id, socket.gettime())
+                else
+                    automatonIcd.onMobSkill(petAction.id, socket.gettime())
+                end
+            end
+        end
+
         -- BST pet commands: only trigger when server confirms the ability fired
         -- Extract cmd_no and abilityId from 0x0028 bitstream (layout per XiPackets/0x0028/Reversing.md):
         --   Bitstream starts at byte 0x09 (after 32-bit actor ID at 0x05):
@@ -336,6 +364,12 @@ function packets.handlePacketIn(e, State, activeModule)
                     elseif abilityId == OVERDRIVE_ABILITY then  -- Overdrive (PUP 2hr): server confirmed
                         State.automaton.odExpireTime = os.time() + OD_DURATION
                         State.automaton.odRemaining  = OD_DURATION
+                    end
+
+                    -- The new automaton's internal cooldowns all start clear, so the old
+                    -- one's stamps must not outlive it.
+                    if abilityId == maneuvers.ACTIVATE_ABILITY or abilityId == maneuvers.DEA_ABILITY then
+                        automatonIcd.onSummonConfirmed()
                     end
 
                     -- PUP maneuver burden. The server volunteers the exact overload chance
@@ -443,8 +477,12 @@ function packets._parsePetSync(data)
     return { targetServerId = targetServerId }
 end
 
--- Pure parse: extracts the automaton's vitals from a 0x0044 packet. See the EXT_JOB_PUP
--- comment above for the field offsets. Returns { hp, maxHp, mp, maxMp } or nil.
+-- Pure parse: extracts the automaton's equipment and vitals from a 0x0044 packet. See the
+-- EXT_JOB_PUP comment above for the field offsets. Returns
+-- { head, frame, attachments, hp, maxHp, mp, maxMp, heatsink } or nil.
+--
+-- head and frame are the raw bytes, which are itemId - 0x2000; nil means the slot is empty.
+-- attachments is a 12-entry array of raw bytes, itemId - 0x2100, 0 for an empty slot.
 --
 -- MaxMP is 0 for the whole life of a Valoredge or Sharpshot frame: those frame stat tables
 -- grant no pool at any level, and Mana Tank only boosts a pool that already exists. MaxHP
@@ -457,12 +495,17 @@ end
 function packets._parseExtJobPup(data)
     if not data or #data < EXT_JOB_MIN_BYTES then return nil end
 
-    local job, hp, maxHp, mp, maxMp
+    local job, head, frame, hp, maxHp, mp, maxMp
+    local attachments = {}
     local heatsink = false
     local ok = pcall(function()
         job   = data:byte(0x04 + 1)
-        for slot = 0, 11 do
-            if data:byte(0x0A + slot + 1) == maneuvers.HEATSINK_ATTACHMENT_ID then
+        head  = data:byte(0x08 + 1)
+        frame = data:byte(0x09 + 1)
+        for slot = 1, 12 do
+            local value = data:byte(0x0A + (slot - 1) + 1)
+            attachments[slot] = value
+            if value == maneuvers.HEATSINK_ATTACHMENT_ID then
                 heatsink = true
             end
         end
@@ -474,7 +517,39 @@ function packets._parseExtJobPup(data)
     if not ok or job ~= EXT_JOB_PUP then return nil end
     if not maxHp or maxHp == 0 or not maxMp then return nil end
 
-    return { hp = hp, maxHp = maxHp, mp = mp, maxMp = maxMp, heatsink = heatsink }
+    return {
+        hp = hp, maxHp = maxHp, mp = mp, maxMp = maxMp, heatsink = heatsink,
+        head        = head ~= 0 and head or nil,
+        frame       = frame ~= 0 and frame or nil,
+        attachments = attachments,
+    }
+end
+
+-- Pure parse: classifies one of the automaton's 0x0028 actions as the thing that advances an
+-- internal cooldown. Returns { kind = 'cast' | 'mobSkill', id } or nil for anything else --
+-- melee rounds, interrupted casts, and every other category.
+--
+-- Both ids come from the full bitstream reader. _parseActionCommand's uint16 shortcut is used
+-- only to skip the melee rounds cheaply: it caps cmd_arg at 1023, which cannot express
+-- Flashbulb 1947, Barrage Turbine 2746 or Regulator 3485.
+--
+-- Trap: cmd_arg holds an id only on the FINISH categories. A cast START carries the spell's
+-- FourCC there and the real spell id in result[0].param, and a FourCC read as an id looks like
+-- a plausible large number rather than an error.
+function packets._parseAutomatonAction(data)
+    local command = packets._parseActionCommand(data)
+    local cmdNo   = command and command.cmdNo
+    if cmdNo ~= CMD_MAGIC_START and cmdNo ~= CMD_MOB_SKILL_FINISH then return nil end
+
+    local action = packets._parseActionResult(data)
+    if not action then return nil end
+
+    if action.cmdNo == CMD_MOB_SKILL_FINISH then
+        return { kind = 'mobSkill', id = action.abilityId }
+    end
+
+    if bit.band(action.abilityId, 0xFFFF) == FOURCC_CAST_INTERRUPT then return nil end
+    return { kind = 'cast', id = action.param }
 end
 
 -- Pure parse: extracts cmd_no and abilityId from the 0x0028 action packet's

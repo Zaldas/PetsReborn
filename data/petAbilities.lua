@@ -1,5 +1,10 @@
 -- data/petAbilities.lua
--- Static ability slot definitions per pet type.
+-- Static ability slot definitions per pet type, and the recast row ceiling they imply.
+--
+-- Returns { slots, MAX_ROWS }. MAX_ROWS is what data.lua sizes its row pool to, what state.lua
+-- builds recast token keys up to, and what petFrame.lua truncates against -- all three read it
+-- rather than each declaring a number that has to be kept in step.
+--
 -- id = ability recast timer ID for direct memory read via abilityrecast lib
 -- displayName = shown in UI
 -- isChargeAbility, maxCharges, baseSecondsPerCharge = charge-based ability config (e.g. Ready)
@@ -8,6 +13,8 @@
 --   Call Beast, Call Wyvern, Charm) stay listed either way so their recast keeps counting
 --   down with the pet out. Avatar rows are deliberately ungated: SMN summons by spell, so
 --   gating that list would leave the frame empty rather than shorter.
+local cooldowns = require('data/automatonCooldowns')
+
 local slots = {
     avatar = {
         { id = 173, displayName = 'BP: Rage', job = 'SMN', level =  1 },
@@ -67,4 +74,33 @@ local slots = {
         -- { id =  46, displayName = 'Run Wild',         job = 'BST', level = 93 },  -- cd:15:00
     },
 }
-return slots
+
+-- The most recast rows any one pet type can produce: its ability slots, plus -- for the
+-- automaton alone -- one row per head magic gate and one per distinct attachment ability.
+--
+-- Derived rather than declared, so uncommenting an ability above grows the budget with it
+-- instead of silently truncating the list at render time.
+local maxAbilities = 0
+for _, list in pairs(slots) do
+    maxAbilities = math.max(maxAbilities, #list)
+end
+
+local maxGates = 0
+for _, order in pairs(cooldowns.display) do
+    maxGates = math.max(maxGates, #order)
+end
+
+-- Tiers share an ability and collapse to one row, so the ceiling is the smaller of the
+-- attachment slots available and the distinct abilities that can fill them.
+local distinct, maxAttachments = {}, 0
+for _, entry in pairs(cooldowns.attachmentAbilities) do
+    if not distinct[entry.skillId] then
+        distinct[entry.skillId] = true
+        maxAttachments = maxAttachments + 1
+    end
+end
+
+return {
+    slots    = slots,
+    MAX_ROWS = maxAbilities + maxGates + math.min(maxAttachments, cooldowns.ATTACHMENT_SLOTS),
+}

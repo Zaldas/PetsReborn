@@ -39,6 +39,8 @@ The `default` and `Segoe UI` text in the layouts uses fonts Windows already prov
   own module with the readouts that job actually cares about
 - **Ability recast rows** — blood pact, wyvern breath, maneuver, and ready timers
 - **PUP maneuver column** — active maneuvers plus live overload/burden tracking
+- **Automaton internal cooldowns** — the latency its head enforces between casts, and its
+  attachment ability recasts, neither of which the client exposes
 - **BST timers** — jug pet duration and charm duration, with jug timers surviving a zone
 - **Pet status effects** — buffs and debuffs on your pet with real durations
 - **Target frame** — what your pet is engaged with

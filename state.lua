@@ -4,10 +4,12 @@
 
 local socket         = require('socket')
 local maneuvers      = require('data/maneuvers')
+local petAbilities   = require('data/petAbilities')
 local ManeuverBurden = require('modules/maneuverBurden')
 
--- Maximum number of recast slots per pet type.
-local MAX_RECAST_SLOTS = 6
+-- Maximum number of recast rows per pet type. Bounds the prebuilt token keys below, so a
+-- layout binding any slot up to it always resolves.
+local MAX_RECAST_SLOTS = petAbilities.MAX_ROWS
 
 local MANEUVER_COUNT = #maneuvers.elements
 
