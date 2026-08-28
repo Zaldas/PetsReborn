@@ -378,6 +378,11 @@ function packets.handlePacketIn(e, State, activeModule)
                             -- the Overload buff is the authority and it outlives the
                             -- automaton, so data.lua reconciles it.
                             burdenModel.resetAll(burdenModel.SPAWN_PCT)
+                        elseif abilityId == maneuvers.DEA_ABILITY then
+                            -- Without this the model inherits the dead automaton's stamps and
+                            -- every element reads 0 while sitting one maneuver away from a
+                            -- near-certain Overload.
+                            burdenModel.resetAll(burdenModel.DEA_SPAWN_PCT)
                         end
                     end
                 end

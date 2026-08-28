@@ -41,6 +41,16 @@ local BASE_DECAY = 1
 -- Buffoon's Collar (16281/16282).
 local SPAWN_PCT = 5
 
+-- Deus Ex Automata seeds far higher, so every element sits a single maneuver from a
+-- near-certain Overload for the ~4 minutes it takes to drain. Horizon-only: base LSB
+-- seeds both summons from the same spawnPet path.
+--
+-- Bracketed, not pinned. Three DEA/first-maneuver pairs share the one unknown seed: two
+-- Light give seed + lightAdd = 99-100, one Dark on a Stormwaker frame gives
+-- seed + darkAdd = 94-95. LSB's flat Dark add for that frame is 14 and Horizon runs its
+-- other branch 2 high, so darkAdd is 14 or 16 and the seed is 79-81.
+local DEA_SPAWN_PCT = 80
+
 -- With thresh = 30 + OVERLOAD_THRESH, the server sets the Overload duration to
 -- burden - thresh and reports the chance as burden - thresh + 5. thresh cancels
 -- between the two, so the countdown is the reported pct minus 5 whatever
@@ -51,6 +61,7 @@ local ManeuverBurden = {}
 
 ManeuverBurden.DECAY_SECONDS   = DECAY_SECONDS
 ManeuverBurden.SPAWN_PCT       = SPAWN_PCT
+ManeuverBurden.DEA_SPAWN_PCT   = DEA_SPAWN_PCT
 ManeuverBurden.OVERLOAD_OFFSET = OVERLOAD_OFFSET
 ManeuverBurden.BASE_DECAY      = BASE_DECAY
 
@@ -92,6 +103,7 @@ function ManeuverBurden.new()
 
     self.DECAY_SECONDS   = DECAY_SECONDS
     self.SPAWN_PCT       = SPAWN_PCT
+    self.DEA_SPAWN_PCT   = DEA_SPAWN_PCT
     self.OVERLOAD_OFFSET = OVERLOAD_OFFSET
 
     -- Advances the shared decay counter by the whole ticks elapsed since the last

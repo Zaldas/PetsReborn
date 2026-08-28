@@ -44,9 +44,11 @@ M.MAX_ACTIVE = 3
 M.OVERLOAD_BUFF  = 299
 M.OVERDRIVE_BUFF = 166
 
--- Activate is the only burden-reset signal. Deactivate despawns the automaton and the
--- next Activate constructs a fresh one, so it needs no counterpart here.
+-- The two burden-reset signals. Deactivate despawns the automaton and the next summon
+-- constructs a fresh one, so it needs no counterpart here. The two seed different
+-- amounts -- see maneuverBurden's SPAWN_PCT and DEA_SPAWN_PCT.
 M.ACTIVATE_ABILITY = 136
+M.DEA_ABILITY      = 310   -- Deus Ex Automata
 
 -- 0x0028 result message ids: 798 reports the overload chance, 799 reports an overload.
 M.MSG_OVERLOAD_CHANCE = 798
