@@ -14,6 +14,7 @@ local exclusionGroups           = nil;
 local petAbilities              = nil;
 local wsDurations               = nil;
 local absorbSpells              = nil;
+local mobSkillSilentDebuffs     = nil;
 local FALLBACK_DURATION_S       = 300;
 
 -- Status-ON messages: action packet messages that carry a status effect application.
@@ -58,9 +59,15 @@ local SHADOW_COPY_IMAGE_IDS = {[66]=true,[444]=true,[445]=true,[446]=true}
 local SHADOW_SINGLE_HIT_MES = {[1]=true,[67]=true,[352]=true,[353]=true,[576]=true,[577]=true}
 
 local spellDamageMes = {[2]=true,[252]=true,[264]=true,[265]=true}
+-- Bio/Dia resist messages. Elemental nullification zeroes the damage and swaps the message,
+-- but the spell script still runs and applies the status unconditionally.
+--   85=MAGIC_RESIST, 284=its AoE variant (Diaga)
+local bioDiaResistMes = {[85]=true,[284]=true}
 
 -- Bio/Dia: mirrors server logic (onSpellCast in dia.lua / bio.lua).
--- Server always deals damage, but only applies the status if new tier > existing opposing tier.
+-- The status lands regardless of the damage dealt: 0 damage still applies it, and so does a
+-- nullified cast that reports "resists the spell" (msg 85/284), because the spell script runs
+-- either way. It applies only if new tier > existing opposing tier.
 -- Tiers: Dia(1) < Bio(2) < DiaII(3) < BioII(4) < DiaIII(5) < BioIII(6)
 local bioDiaData = {
     [23]  = { statusId=134, opposing=135, tier=1, dur=60  },             -- Dia
@@ -137,17 +144,6 @@ local bloodPactDebuffs = {
     [533] = { messages = {[146]=true, [147]=true}, statuses = {[90]=180, [92]=180} },
 }
 
--- Mob skill silent debuffs: mob skills that call mobStatusEffectMove() but do NOT call
--- skill:setMsg() with the result.  The status is applied server-side but the 0x028 action
--- carries a damage message — neither the statusOnMes path nor the NONE-message path fires.
--- Pattern mirrors bloodPactDebuffs: only applied when ability.Param (damage) > 0 and no
--- active timer exists.  May produce false timers if the status was resisted independently
--- of the damage, but resist on these abilities is uncommon.
--- Keyed by mob skill ID (action.Param for type 7/11).
-local mobSkillSilentDebuffs = {
-    [888] = { statusId = 4, duration = 60 },  -- Thunderspark (Ramuh) → PARALYSIS (4), 60s [thunderspark.lua — ignores mobStatusEffectMove return value]
-}
-
 -- Blood pact ward buff durations: SMN avatar ward pacts that apply status effects to party
 -- members via addStatusEffect() server-side.  Fire as type 13 (blood pact) actions with
 -- msg=JA_GAIN_EFFECT (266) and ability.Param = statusId.
@@ -195,20 +191,37 @@ local function logUnknownDuration(spellId, statusId)
     f:close()
 end
 
+-- Mob skill names live in the client's 'monsters.abilities' string table indexed at
+-- skillId - 256; GetAbilityById is a different namespace and returns an unrelated
+-- name for the same number (mob skill 1836 Nerve Gas resolves there as "Frogkick").
+local function resolveMobSkillName(skillId)
+    local resMgr = AshitaCore:GetResourceManager()
+    if not resMgr then return nil end
+    if skillId < 256 then
+        local res = resMgr:GetAbilityById(skillId)
+        if res and res.Name and res.Name[1] and res.Name[1] ~= '' then return res.Name[1] end
+        return nil
+    end
+    local name = resMgr:GetString('monsters.abilities', skillId - 256)
+    if name and name ~= '' then return name end
+    return nil
+end
+
 -- Log type 7/11 mob skills that dealt damage but had no status message and are not in any
 -- tracking table. Candidates for mobSkillSilentDebuffs if LSB confirms a silent
 -- mobStatusEffectMove() call. Deduplicated by skill ID per session.
-local function logUntrackedMobSkillHit(skillId, message, damage, actorId, targetId)
+-- hasSkillDebuffs marks a skill that owns a skillDebuffs entry which this damage message could
+-- not reach — the strongest silent-status candidates, since the entry proves a status is known.
+local function logUntrackedMobSkillHit(skillId, message, damage, actorId, targetId, hasSkillDebuffs)
     if not UNKNOWN_BUFF_LOG then return end
     if loggedUntrackedMobSkills[skillId] then return end
     loggedUntrackedMobSkills[skillId] = true
-    local resMgr = AshitaCore:GetResourceManager()
-    local res = resMgr and resMgr:GetAbilityById(skillId)
-    local skillName = (res and res.Name and res.Name[1] and res.Name[1] ~= '' and res.Name[1]) or ('skill#' .. skillId)
+    local skillName = resolveMobSkillName(skillId) or ('skill#' .. skillId)
     local f = io.open(UNKNOWN_BUFF_LOG, 'a')
     if not f then return end
-    f:write(string.format('%s  UNTRACKED_MOB_SKILL  skillId=%-5d  msg=%-4d  dmg=%-6d  actor=%-8d  target=%-8d  name=%s\n',
-        os.date('%Y-%m-%d %H:%M:%S'), skillId, message, damage, actorId or 0, targetId or 0, skillName))
+    f:write(string.format('%s  UNTRACKED_MOB_SKILL  skillId=%-5d  msg=%-4d  dmg=%-6d  actor=%-8d  target=%-8d  entry=%-11s name=%s\n',
+        os.date('%Y-%m-%d %H:%M:%S'), skillId, message, damage, actorId or 0, targetId or 0,
+        hasSkillDebuffs and 'skillDebuffs' or 'none', skillName))
     f:close()
 end
 
@@ -237,6 +250,11 @@ local function resolveAbilityName(actionType, abilityId)
     if actionType == 11 then
         local petName = petAbilities and petAbilities.names[abilityId]
         if petName then return petName end
+    end
+    -- Monster skills index a separate string table, not the ability table.
+    if actionType == 7 or actionType == 11 then
+        local mobName = resolveMobSkillName(abilityId)
+        if mobName then return mobName end
     end
     -- The client's ability table indexes weapon skills at the raw ID and job abilities at
     -- ID + 0x200. Type 3 carries both: weapon skills and the physical JAs.
@@ -348,12 +366,19 @@ end
 
 -- Bio and Dia: mirrors server tier check (not bio or bio:getTier() < tier).
 -- spellDamageMes fires even when the server rejects the status, so the caller gates on
--- action.Type == 4 and spellDamageMes[message] before calling this.
+-- action.Type == 4 and spellDamageMes/bioDiaResistMes[message] before calling this.
 local function applyBioDia(action, target, ability, now)
     local spell = action.Param
     local bioDia = bioDiaData[spell]
     if not bioDia then return end
     local active = bioDiaTiers[target.Id]
+    -- sweepExpiredEntities only drops the tier record when the entity's whole shell goes, so a
+    -- Bio/Dia that lapsed while other debuffs kept the shell alive leaves a stale record behind.
+    -- Gate on the live timer, not the record, or the next cast of that tier is rejected forever.
+    if active then
+        local expiry = statusTracker.trackedEntities[target.Id][active.statusId]
+        if expiry == nil or expiry <= now then active = nil end
+    end
     if not active or active.tier < bioDia.tier then
         statusTracker.trackedEntities[target.Id][bioDia.opposing] = nil
         statusTracker.trackedEntities[target.Id][bioDia.statusId] = now + bioDia.dur
@@ -555,10 +580,14 @@ local function applySilentMobDebuff(action, target, ability, now)
         silentSrc = 'petAbilities'
     end
     if silentDebuff and ability.Param > 0 then
-        local existing = statusTracker.trackedEntities[target.Id][silentDebuff.statusId]
-        if not existing or existing <= now then
-            statusTracker.trackedEntities[target.Id][silentDebuff.statusId] = now + silentDebuff.duration
-            logStatusApplication(action.Type, spell, silentDebuff.statusId, ability.Message, action.UserId, target.Id, silentDebuff.duration, silentSrc)
+        -- Multi-status skills hold a list of records; single-status ones are the record itself.
+        local records = silentDebuff[1] and silentDebuff or { silentDebuff }
+        for _, record in ipairs(records) do
+            local existing = statusTracker.trackedEntities[target.Id][record.statusId]
+            if not existing or existing <= now then
+                statusTracker.trackedEntities[target.Id][record.statusId] = now + record.duration
+                logStatusApplication(action.Type, spell, record.statusId, ability.Message, action.UserId, target.Id, record.duration, silentSrc)
+            end
         end
     end
 end
@@ -638,11 +667,12 @@ statusTracker.HandleActionPacket = function(e)
             end
 
             -- Bio and Dia: mirrors server tier check (not bio or bio:getTier() < tier).
-            -- spellDamageMes fires even when the server rejects the status, so we must gate here.
+            -- Damage and resist messages both reach applyBioDia; the tier check inside it is
+            -- what rejects a status the server would have rejected.
             if action.Type == 4 and applyAbsorbSpell(action, target, ability, now) then
                 -- handled
 
-            elseif action.Type == 4 and spellDamageMes[message] then
+            elseif action.Type == 4 and (spellDamageMes[message] or bioDiaResistMes[message]) then
                 applyBioDia(action, target, ability, now)
 
             elseif statusOnMes[message] then
@@ -685,10 +715,13 @@ statusTracker.HandleActionPacket = function(e)
 
             -- Catch-all: type 7/11 mob skills that dealt damage (ability.Param > 0) with a
             -- message outside statusOnMes and not NONE (0), and are not already covered by
-            -- skillDebuffs, mobSkillSilentDebuffs or petAbilities.hitData. Logged once per
-            -- skill ID per session to unknownDurations.log as UNTRACKED_MOB_SKILL — candidates
-            -- for mobSkillSilentDebuffs if LSB confirms a silent mobStatusEffectMove() call
+            -- mobSkillSilentDebuffs or petAbilities.hitData. Logged once per skill ID per
+            -- session to unknownDurations.log as UNTRACKED_MOB_SKILL — candidates for
+            -- mobSkillSilentDebuffs if LSB confirms a silent mobStatusEffectMove() call
             -- (thunderspark pattern).
+            -- A skillDebuffs entry does NOT suppress this: that table is only read from the
+            -- status-message and NONE-message paths, so on a damage message it did nothing.
+            -- Suppressing on it hid barofield (1832) and nerve_gas's POISON from every log.
             if (action.Type == 7 or action.Type == 11)
                     and action.UserId ~= target.Id
                     and spell
@@ -697,8 +730,9 @@ statusTracker.HandleActionPacket = function(e)
                     and message ~= 0 then
                 local debuffs = mobStatusDurations and mobStatusDurations.skillDebuffs
                 local petHits = petAbilities and petAbilities.hitData
-                if not mobSkillSilentDebuffs[spell] and not (debuffs and debuffs[spell]) and not (petHits and petHits[spell]) then
-                    logUntrackedMobSkillHit(spell, message, ability.Param, action.UserId, target.Id)
+                if not mobSkillSilentDebuffs[spell] and not (petHits and petHits[spell]) then
+                    logUntrackedMobSkillHit(spell, message, ability.Param, action.UserId, target.Id,
+                        debuffs ~= nil and debuffs[spell] ~= nil)
                 end
             end
 
@@ -978,6 +1012,7 @@ statusTracker.init = function(opts)
     wsDurations               = dofile(opts.addonPath .. 'libs/status/data/wsDurations.lua');
     absorbSpells              = dofile(opts.addonPath .. 'libs/status/data/absorbSpells.lua');
     exclusionGroups           = dofile(opts.addonPath .. 'libs/status/data/exclusionGroups.lua');
+    mobSkillSilentDebuffs     = dofile(opts.addonPath .. 'libs/status/data/mobSkillSilentDebuffs.lua');
 
     if opts.enableAuditLog ~= false then
         UNKNOWN_BUFF_LOG = AshitaCore:GetInstallPath() .. 'config/addons/' .. opts.addonName .. '/unknownDurations.log'

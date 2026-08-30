@@ -413,8 +413,8 @@ return {
                       -- Auroral Drape: SILENCE(6)=60s, BLINDNESS(5)=90s [auroral_drape.lua]
 
         -- ── Puk ───────────────────────────────────────────────────────────────
-        [2189] = { [6]=60, [5]=60 },
-                      -- Aeolian Void: SILENCE(6)=60s, BLINDNESS(5)=60s [aeolian_void.lua]
+        [2189] = { [6]=180, [5]=180 },
+                      -- Aeolian Void: SILENCE(6)=180s, BLINDNESS(5)=180s [aeolian_void.lua]
 
         -- ── Weeper / Seether (Al'Taieu Sea) ───────────────────────────────────
         [587]  = 90,  -- Antiphase       → SILENCE (6)           fixed 90s [antiphase.lua]
@@ -466,7 +466,9 @@ return {
         [1832] = 60,  -- Barofield       → WEIGHT (12)           fixed 60s [barofield.lua]
 
         -- ── Rampart (Besieged) ────────────────────────────────────────────────
-        [2033] = 30,  -- Choke Chain     → BIND (11)             fixed 30s [choke_chain.lua]
+        [2033] = { [16]=60, [11]=60, [6]=60 },
+                      -- Choke Chain: AMNESIA(16) carries the message; BIND(11) and SILENCE(6)
+                      -- are applied first and land silently [choke_chain.lua]
 
         -- ── Cockatrice (additional) ───────────────────────────────────────────
         [652]  = 60,  -- Blaster         → PARALYSIS (4)         fixed 60s [blaster.lua]
@@ -476,7 +478,8 @@ return {
 
         -- ── Capacitor / Cluster ───────────────────────────────────────────────
         [2056] = 180, -- Discharge       → PARALYSIS (4)         fixed 180s [discharge.lua]
-        [2028] = 60,  -- Fulmination     → PARALYSIS (4)         fixed 60s (stun 4s skipped) [fulmination.lua]
+        [2028] = { [4]=60, [10]=10 },
+                      -- Fulmination: PARALYSIS(4)=60s, STUN(10)=randomInt(6,10) [fulmination.lua]
 
         -- ── Troll (Demoralizing Roar) ─────────────────────────────────────────
         [2101] = 90,  -- Demoralizing Roar → ATTACK_DOWN (147)   TP-based max [demoralizing_roar.lua]
