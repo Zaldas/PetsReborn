@@ -65,12 +65,12 @@ local spellDamageMes = {[2]=true,[252]=true,[264]=true,[265]=true}
 local bioDiaData = {
     [23]  = { statusId=134, opposing=135, tier=1, dur=60  },             -- Dia
     [33]  = { statusId=134, opposing=135, tier=1, dur=60  },             -- Diaga
-    [24]  = { statusId=134, opposing=135, tier=3, dur=120, displayId=807 }, -- Dia II
-    [34]  = { statusId=134, opposing=135, tier=3, dur=120, displayId=807 }, -- Diaga II
-    [25]  = { statusId=134, opposing=135, tier=5, dur=180, displayId=807 }, -- Dia III
+    [24]  = { statusId=134, opposing=135, tier=3, dur=120, displayId=814 }, -- Dia II
+    [34]  = { statusId=134, opposing=135, tier=3, dur=120, displayId=814 }, -- Diaga II
+    [25]  = { statusId=134, opposing=135, tier=5, dur=180, displayId=814 }, -- Dia III
     [230] = { statusId=135, opposing=134, tier=2, dur=60  },             -- Bio
-    [231] = { statusId=135, opposing=134, tier=4, dur=120, displayId=808 }, -- Bio II
-    [232] = { statusId=135, opposing=134, tier=6, dur=180, displayId=808 }, -- Bio III
+    [231] = { statusId=135, opposing=134, tier=4, dur=120, displayId=815 }, -- Bio II
+    [232] = { statusId=135, opposing=134, tier=6, dur=180, displayId=815 }, -- Bio III
 }
 -- [targetId] = { statusId, tier } — single slot; Bio/Dia are mutually exclusive.
 local bioDiaTiers = {}
@@ -84,10 +84,10 @@ local spellMeta = {
     [259] = { buffId = 19, clears = {2, 193} },  -- Sleep II    → SLEEP_II (19), clears Sleep I + Lullaby
     [274] = { buffId = 19, clears = {2, 193} },  -- Sleepga II  → SLEEP_II (19), clears Sleep I + Lullaby
     [364] = { buffId = 19, clears = {2, 193} },  -- Sleepga III → SLEEP_II (19), clears Sleep I + Lullaby
-    [221] = { statusId = 3, displayId = 809 },   -- Poison II   → custom icon (809)
+    [221] = { statusId = 3, displayId = 816 },   -- Poison II   → custom icon (816)
 }
 
--- [serverId][realStatusId] = displayStatusId (807-1022 range, see libs/status/icons/README.md)
+-- [serverId][realStatusId] = displayStatusId (814-1022 range, see libs/status/icons/README.md)
 local displayIdOverrides = {}
 
 local function getDisplayId(serverId, statusId)
