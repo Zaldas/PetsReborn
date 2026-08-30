@@ -66,7 +66,6 @@ return {
     [421] = 120, [422] = 180, [423] = 240, -- Battlefield / Carnage / Massacre Elegy  (423 trust-only; LSB unimplemented, extrapolated)
     [376] = 30,  [463] = 30,              -- Horde Lullaby / Foe Lullaby
     [377] = 60,  [471] = 60,              -- Horde Lullaby II / Foe Lullaby II
-    [321] = 60,                           -- Bully
     [472] = 120,                          -- Pining Nocturne
     [466] = 30,                           -- Maiden's Virelai → Charm (14); gear-boosted only, no song-duration bonus
 

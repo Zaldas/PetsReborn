@@ -10,7 +10,10 @@ local spellDurations            = nil;
 local abilityDurations          = nil;
 local additionalEffectDurations = nil;
 local mobStatusDurations        = nil;
+local exclusionGroups           = nil;
 local petAbilities              = nil;
+local wsDurations               = nil;
+local absorbSpells              = nil;
 local FALLBACK_DURATION_S       = 300;
 
 -- Status-ON messages: action packet messages that carry a status effect application.
@@ -39,6 +42,21 @@ local statusOnMes = {[101]=true,[127]=true,[160]=true,[164]=true,[166]=true,[186
 local statusOffMes = {[64]=true,[159]=true,[204]=true,[206]=true,[321]=true,[322]=true,[341]=true,[342]=true,[343]=true,[344]=true,[350]=true,[378]=true,[531]=true,[647]=true,[805]=true,[806]=true}
 local WAKEUP_MES = 168  -- "X awakens." — woken from sleep by damage; param is not a status ID
 local deathMes = {[6]=true,[20]=true,[97]=true,[113]=true,[406]=true,[605]=true,[646]=true}
+
+-- Shadow images end when the images are consumed, not when the timer runs out. The wear-off
+-- message (206) is the signal for that, and the statusOff path already handles it.
+--
+-- Copy Image is cleared by a landed single-target physical hit as well: it absorbs EVERY such
+-- attack (battleutils.cpp IsAbsorbByShadow), so damage getting through proves its images are
+-- spent. Blink is deliberately NOT cleared that way, because it whiffs 20% of the time and a
+-- landed hit proves nothing. AoE and magic bypass shadows entirely, so message 185 (AoE weapon
+-- skills and mob skills) is excluded for the same reason.
+--
+-- 66=Copy Image, 444/445/446=Copy Image (2)/(3)/(4+). The counter icons are set for PCs only,
+-- so a mob's shadows always read as plain Copy Image.
+local SHADOW_COPY_IMAGE_IDS = {[66]=true,[444]=true,[445]=true,[446]=true}
+local SHADOW_SINGLE_HIT_MES = {[1]=true,[67]=true,[352]=true,[353]=true,[576]=true,[577]=true}
+
 local spellDamageMes = {[2]=true,[252]=true,[264]=true,[265]=true}
 
 -- Bio/Dia: mirrors server logic (onSpellCast in dia.lua / bio.lua).
@@ -85,6 +103,7 @@ local physicalJaDebuffs = {
     [46] = { statusId = 10, duration = 6 },   -- Shield Bash (PLD) → STUN (10), fixed 6s
     [77] = { statusId = 10, duration = 8 },   -- Weapon Bash (DRK) → STUN (10), random 2-8s; max
     [57] = { statusId = 11, duration = 30 },  -- Shadowbind (RNG) → BIND (11), fixed 30s [LSB abilities.sql: actionType=3, not 6]
+    [170] = { statusId = 149, duration = 30 }, -- Angon (DRG) → DEFENSE_DOWN (149), 15s + 15s/merit; 30s = one merit [dragoon.lua useAngon]
 }
 
 -- Blood pact debuffs/buffs on the pet or enemies: avatar pacts that apply status effects
@@ -219,7 +238,13 @@ local function resolveAbilityName(actionType, abilityId)
         local petName = petAbilities and petAbilities.names[abilityId]
         if petName then return petName end
     end
-    local res = resMgr:GetAbilityById(abilityId)
+    -- The client's ability table indexes weapon skills at the raw ID and job abilities at
+    -- ID + 0x200. Type 3 carries both: weapon skills and the physical JAs.
+    local lookupId = abilityId
+    if actionType == 6 or (actionType == 3 and physicalJaDebuffs and physicalJaDebuffs[abilityId]) then
+        lookupId = abilityId + 0x200
+    end
+    local res = resMgr:GetAbilityById(lookupId)
     if res and res.Name and res.Name[1] and res.Name[1] ~= '' then
         return res.Name[1]
     end
@@ -345,6 +370,18 @@ local function applyBioDia(action, target, ability, now)
     end
 end
 
+-- Remove any other member of statusId's exclusion group. The server drops the loser silently
+-- (no wear-off packet), so without this the previous member lingers until its own timer runs out.
+local function clearExclusionGroup(entityStatuses, statusId)
+    local group = exclusionGroups and exclusionGroups.groupOf[statusId]
+    if group == nil then return end
+    for _, otherId in ipairs(exclusionGroups.members[group]) do
+        if otherId ~= statusId then
+            entityStatuses[otherId] = nil
+        end
+    end
+end
+
 -- Regular buffs/debuffs from a statusOnMes message (the non-mob-self-buff sub-path).
 -- Returns true if the caller should `goto continue_ability` (status unresolved, or the
 -- resolved duration is a known-zero shadow/luopan-based effect with no time component).
@@ -393,6 +430,8 @@ local function applyStatusOn(action, target, ability, now, isPetActor)
             statusTracker.trackedEntities[target.Id][clearId] = nil;
         end
     end
+    clearExclusionGroup(statusTracker.trackedEntities[target.Id], statusId)
+
     statusTracker.trackedEntities[target.Id][statusId] = now + duration;
     logStatusApplication(action.Type, spell, statusId, message, action.UserId, target.Id, duration, durationSrc);
     if meta and meta.displayId and meta.statusId == statusId then
@@ -415,6 +454,8 @@ local function applyMobSelfBuff(action, target, ability, now)
         if dur == nil then
             logUnknownMobSelfBuff(action.Type, spell, statusId, action.UserId)
         elseif dur > 0 then
+            clearExclusionGroup(statusTracker.trackedEntities[target.Id], statusId)
+
             statusTracker.trackedEntities[target.Id][statusId] = now + dur
             logStatusApplication(action.Type, spell, statusId, message, action.UserId, target.Id, dur, 'selfBuffs')
         end
@@ -433,6 +474,23 @@ end
 
 -- Physical JA debuffs (type 3): weapon-based abilities (Shield Bash, Weapon Bash).
 -- Apply on hit confirmed (ability.Param = damage > 0), no overwrite if already active.
+-- Absorb-*: the packet carries the target's debuff message only. Apply that debuff, and the
+-- caster's matching boost, which the server grants silently.
+local function applyAbsorbSpell(action, target, ability, now)
+    local absorb = absorbSpells and absorbSpells[action.Param]
+    if absorb == nil or ability.Message ~= absorb.message then return false end
+    local expiry = now + absorb.duration
+    if statusTracker.trackedEntities[target.Id] then
+        statusTracker.trackedEntities[target.Id][absorb.down] = expiry
+    end
+    if statusTracker.trackedEntities[action.UserId] == nil then
+        statusTracker.trackedEntities[action.UserId] = T{}
+    end
+    statusTracker.trackedEntities[action.UserId][absorb.boost] = expiry
+    logStatusApplication(4, action.Param, absorb.down, ability.Message, action.UserId, target.Id, absorb.duration, 'absorbSpells')
+    return true
+end
+
 local function applyPhysicalJaDebuff(action, target, ability, now)
     local spell = action.Param
     local message = ability.Message
@@ -442,6 +500,20 @@ local function applyPhysicalJaDebuff(action, target, ability, now)
         if not existing or existing <= now then
             statusTracker.trackedEntities[target.Id][jaDebuff.statusId] = now + jaDebuff.duration
             logStatusApplication(3, spell, jaDebuff.statusId, message, action.UserId, target.Id, jaDebuff.duration, 'physicalJaDebuffs')
+        end
+    end
+
+    -- Weapon skills (also action type 3). Keys do not overlap physicalJaDebuffs, so the two
+    -- tables are looked up independently rather than merged.
+    local ws = wsDurations and wsDurations[spell]
+    if ws and ability.Param > 0 then
+        local statusIds = ws.statusIds or { ws.statusId }
+        for _, statusId in ipairs(statusIds) do
+            local existing = statusTracker.trackedEntities[target.Id][statusId]
+            if not existing or existing <= now then
+                statusTracker.trackedEntities[target.Id][statusId] = now + ws.duration
+                logStatusApplication(3, spell, statusId, message, action.UserId, target.Id, ws.duration, 'wsDurations')
+            end
         end
     end
 end
@@ -510,6 +582,17 @@ local function applyAdditionalEffect(action, target, ability, now)
     end
 end
 
+-- A single-target physical hit landing on an entity proves its Copy Image images are spent.
+local function noteShadowProof(targetId, now)
+    local entity = statusTracker.trackedEntities[targetId]
+    if entity == nil then return end
+    for statusId in pairs(SHADOW_COPY_IMAGE_IDS) do
+        if entity[statusId] ~= nil and entity[statusId] > now then
+            entity[statusId] = nil
+        end
+    end
+end
+
 statusTracker.HandleActionPacket = function(e)
 
     local action = helpers.ParseActionPacket(e);
@@ -550,9 +633,16 @@ statusTracker.HandleActionPacket = function(e)
                 statusTracker.trackedEntities[target.Id] = T{};
             end
 
+            if SHADOW_SINGLE_HIT_MES[message] then
+                noteShadowProof(target.Id, now)
+            end
+
             -- Bio and Dia: mirrors server tier check (not bio or bio:getTier() < tier).
             -- spellDamageMes fires even when the server rejects the status, so we must gate here.
-            if action.Type == 4 and spellDamageMes[message] then
+            if action.Type == 4 and applyAbsorbSpell(action, target, ability, now) then
+                -- handled
+
+            elseif action.Type == 4 and spellDamageMes[message] then
                 applyBioDia(action, target, ability, now)
 
             elseif statusOnMes[message] then
@@ -885,6 +975,9 @@ statusTracker.init = function(opts)
     additionalEffectDurations = dofile(opts.addonPath .. 'libs/status/data/additionalEffectDurations.lua');
     mobStatusDurations        = dofile(opts.addonPath .. 'libs/status/data/mobStatusDurations.lua');
     petAbilities              = dofile(opts.addonPath .. 'libs/status/data/petAbilities.lua');
+    wsDurations               = dofile(opts.addonPath .. 'libs/status/data/wsDurations.lua');
+    absorbSpells              = dofile(opts.addonPath .. 'libs/status/data/absorbSpells.lua');
+    exclusionGroups           = dofile(opts.addonPath .. 'libs/status/data/exclusionGroups.lua');
 
     if opts.enableAuditLog ~= false then
         UNKNOWN_BUFF_LOG = AshitaCore:GetInstallPath() .. 'config/addons/' .. opts.addonName .. '/unknownDurations.log'

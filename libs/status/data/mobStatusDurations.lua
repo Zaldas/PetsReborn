@@ -209,6 +209,8 @@ return {
         -- ── Bugard ────────────────────────────────────────────────────────────
         [343]  = 300, -- Spoil           → STR_DOWN (136)        fixed 300s [spoil.lua]
         [1862] = 300, -- Spoil (N. Bugard) → STR_DOWN (136)      fixed 300s [spoil.lua; client name: Spoil]
+        [386]  = 180, -- Awful Eye       → STR_DOWN (136)        fixed 180s [awful_eye.lua; gaze]
+        [387]  = 6,   -- Heavy Bellow    → STUN (10)             fixed 6s [heavy_bellow.lua]
 
         -- ── Cockatrice ────────────────────────────────────────────────────────
         [269] = 120,  -- Petribreath     → PETRIFICATION (7)     fixed 120s [petribreath.lua]

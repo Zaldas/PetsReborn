@@ -17,8 +17,8 @@ return {
     -- ── Dark Knight ───────────────────────────────────────────────────────
     [51]  = 60,   -- Last Resort (HorizonXI: doubled 30→60s, buff 64)
 
-    -- ── Bard ──────────────────────────────────────────────────────────────
-    [321] = 30,   -- Bully → DOUBT (576), 30s [thief.lua: addStatusEffectEx(DOUBT,INTIMIDATE,15+jp,0,30)]
+    -- ── Corsair ───────────────────────────────────────────────────────────
+    [131] = 90,   -- Light Shot → SLEEP_I (2), 90s pre-resist [era corsair.lua: 90 * resist]
 }
 -- NOTE: Shield Bash (46), Weapon Bash (77), and Shadowbind (57) are NOT declared here —
 -- LSB abilities.sql confirms they fire as action.Type==3, not 6, so this table's type-6
