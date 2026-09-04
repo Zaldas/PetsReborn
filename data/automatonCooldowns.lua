@@ -34,22 +34,19 @@ M.magicFrames = {
 --   Stormwaker magic      12.8, LSB 8   (57 intervals, 12.58-12.80)
 --   Spiritreaver magic    12.8, LSB 8   (10 intervals, 12.81)
 --   Spiritreaver elemental  35, LSB 30  (5 samples, 35.01-35.31)
--- Everything else is LSB's and unverified. Both measured heads are LSB 8, so a head LSB puts at
--- 10 measuring 12.8 would mean the gate is not per-head at all -- this table's shape would be
--- wrong, not just its numbers.
 M.categories = {
     -- Harlequin
-    [1] = { magic = 12.8, enfeeble = 12.8, heal = 12 },
+    [1] = { magic = 12.8, enfeeble = 10, heal = 12 },
     -- Valoredge
     [2] = { magic = 12.8, heal = 20 },
     -- Sharpshot
     [3] = { magic = 12.8, enfeeble = 12, heal = 20 },
     -- Stormwaker
-    [4] = { magic = 12.8, enfeeble = 12.8, heal = 20, elemental = 25, enhance = 25 },
+    [4] = { magic = 12.8, enfeeble = 10, heal = 20, elemental = 25, enhance = 25 },
     -- Soulsoother
-    [5] = { magic = 12.8, enfeeble = 12.8, heal = 10, status = 10, enhance = 15 },
+    [5] = { magic = 12.8, enfeeble = 10, heal = 10, status = 10, enhance = 15 },
     -- Spiritreaver
-    [6] = { magic = 6.4, enfeeble = 6.4, elemental = 35, enhance = 35 },
+    [6] = { magic = 6.4, enfeeble = 5, elemental = 35, enhance = 35 },
 }
 
 M.CATEGORY_LABELS = {
