@@ -29,18 +29,13 @@ M.magicFrames = {
 -- Keyed by headItemId - 0x2000, the raw byte the 0x0044 packet carries. A full transcription of
 -- setMagicCooldowns, enhance included, so it can be diffed against LSB; M.display decides which
 -- of these become rows.
---
--- Horizon measurements, 2026-08-25, from ~200 logged intervals:
---   Stormwaker magic      12.8, LSB 8   (57 intervals, 12.58-12.80)
---   Spiritreaver magic    12.8, LSB 8   (10 intervals, 12.81)
---   Spiritreaver elemental  35, LSB 30  (5 samples, 35.01-35.31)
 M.categories = {
     -- Harlequin
     [1] = { magic = 12.8, enfeeble = 10, heal = 12 },
     -- Valoredge
     [2] = { magic = 12.8, heal = 20 },
     -- Sharpshot
-    [3] = { magic = 12.8, enfeeble = 12, heal = 20 },
+    [3] = { magic = 12.8, enfeeble = 10, heal = 20 },
     -- Stormwaker
     [4] = { magic = 12.8, enfeeble = 10, heal = 20, elemental = 25, enhance = 25 },
     -- Soulsoother
