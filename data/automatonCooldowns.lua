@@ -39,9 +39,9 @@ M.categories = {
     -- Stormwaker
     [4] = { magic = 12.8, enfeeble = 10, heal = 20, elemental = 25, enhance = 25 },
     -- Soulsoother
-    [5] = { magic = 12.8, enfeeble = 10, heal = 10, status = 10, enhance = 15 },
+    [5] = { magic = 6.4, enfeeble = 10, heal = 10, status = 10, enhance = 15 },
     -- Spiritreaver
-    [6] = { magic = 6.4, enfeeble = 5, elemental = 35, enhance = 35 },
+    [6] = { magic = 12.8, enfeeble = 5, elemental = 35, enhance = 35 },
 }
 
 M.CATEGORY_LABELS = {
