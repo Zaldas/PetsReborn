@@ -59,15 +59,14 @@ local SHADOW_COPY_IMAGE_IDS = {[66]=true,[444]=true,[445]=true,[446]=true}
 local SHADOW_SINGLE_HIT_MES = {[1]=true,[67]=true,[352]=true,[353]=true,[576]=true,[577]=true}
 
 local spellDamageMes = {[2]=true,[252]=true,[264]=true,[265]=true}
--- Bio/Dia resist messages. Elemental nullification zeroes the damage and swaps the message,
--- but the spell script still runs and applies the status unconditionally.
---   85=MAGIC_RESIST, 284=its AoE variant (Diaga)
-local bioDiaResistMes = {[85]=true,[284]=true}
+-- Bio/Dia outcomes that deal no damage — nullified (85) or absorbed (7). The status still lands.
+-- 284/367 are their AoE variants; that mapping lives in C++, so a Lua grep turns up nothing.
+local bioDiaNoDamageMes = {[7]=true,[85]=true,[284]=true,[367]=true}
 
 -- Bio/Dia: mirrors server logic (onSpellCast in dia.lua / bio.lua).
--- The status lands regardless of the damage dealt: 0 damage still applies it, and so does a
--- nullified cast that reports "resists the spell" (msg 85/284), because the spell script runs
--- either way. It applies only if new tier > existing opposing tier.
+-- The status lands regardless of damage dealt, including casts that deal none at all
+-- (bioDiaNoDamageMes). Applies only on a strictly higher tier — a same-tier recast does not
+-- refresh the duration.
 -- Tiers: Dia(1) < Bio(2) < DiaII(3) < BioII(4) < DiaIII(5) < BioIII(6)
 local bioDiaData = {
     [23]  = { statusId=134, opposing=135, tier=1, dur=60  },             -- Dia
@@ -364,9 +363,9 @@ end
 -- etc.) live inside the function that needs them.
 -------------------------------------------------------------------------------
 
--- Bio and Dia: mirrors server tier check (not bio or bio:getTier() < tier).
+-- Bio and Dia: mirrors the server's tier rules (see bioDiaData).
 -- spellDamageMes fires even when the server rejects the status, so the caller gates on
--- action.Type == 4 and spellDamageMes/bioDiaResistMes[message] before calling this.
+-- action.Type == 4 and spellDamageMes/bioDiaNoDamageMes[message] before calling this.
 local function applyBioDia(action, target, ability, now)
     local spell = action.Param
     local bioDia = bioDiaData[spell]
@@ -666,13 +665,12 @@ statusTracker.HandleActionPacket = function(e)
                 noteShadowProof(target.Id, now)
             end
 
-            -- Bio and Dia: mirrors server tier check (not bio or bio:getTier() < tier).
-            -- Damage and resist messages both reach applyBioDia; the tier check inside it is
-            -- what rejects a status the server would have rejected.
+            -- Damage and no-damage messages both reach applyBioDia; the tier check inside it
+            -- is what rejects a status the server would have rejected.
             if action.Type == 4 and applyAbsorbSpell(action, target, ability, now) then
                 -- handled
 
-            elseif action.Type == 4 and (spellDamageMes[message] or bioDiaResistMes[message]) then
+            elseif action.Type == 4 and (spellDamageMes[message] or bioDiaNoDamageMes[message]) then
                 applyBioDia(action, target, ability, now)
 
             elseif statusOnMes[message] then
