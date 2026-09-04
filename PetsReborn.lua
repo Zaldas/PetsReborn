@@ -426,6 +426,82 @@ local function loadLayout()
     return { name = styleName }
 end
 
+local SCALE_MIN = 0.25
+local SCALE_MAX = 2.5
+
+-- scale is 0 (auto) or a SCALE_MIN..SCALE_MAX multiplier. Returns true when a stored value
+-- was out of range and repaired.
+local function sanitizeScale()
+    local value = prSettings.scale
+    if type(value) ~= 'number' then
+        prSettings.scale = 0
+        return true
+    end
+    if value < 0 then
+        prSettings.scale = 0
+        return true
+    end
+    if value > 0 and value < SCALE_MIN then
+        prSettings.scale = SCALE_MIN
+        return true
+    end
+    if value > SCALE_MAX then
+        prSettings.scale = SCALE_MAX
+        return true
+    end
+    return false
+end
+
+-- Settings written by earlier versions that nothing reads. Listed explicitly rather than
+-- pruning everything absent from defaultSettings, so an unrecognised key is kept, not dropped.
+local DEAD_SETTINGS = T{ 'recastVersion', 'showHpBar', 'showStayCounter' }
+
+local function pruneDeadSettings()
+    local changed = false
+    for _, key in ipairs(DEAD_SETTINGS) do
+        if prSettings[key] ~= nil then
+            prSettings[key] = nil
+            changed = true
+        end
+    end
+    return changed
+end
+
+-- Slot visibility is keyed by tostring(id). Numeric keys are pre-1.0 leftovers that nothing
+-- reads; they persist because a save round-trips whatever the table holds. Returns true when
+-- one was dropped.
+local function sanitizeRecastVisible()
+    local byType = prSettings.recastVisible
+    if type(byType) ~= 'table' then return false end
+
+    local changed = false
+    for _, typeVis in pairs(byType) do
+        if type(typeVis) == 'table' then
+            -- Collected before mutating: adding keys during a pairs traversal is undefined.
+            local numericKeys = nil
+            for key in pairs(typeVis) do
+                if type(key) == 'number' then
+                    numericKeys = numericKeys or {}
+                    numericKeys[#numericKeys + 1] = key
+                end
+            end
+            if numericKeys then
+                for _, key in ipairs(numericKeys) do
+                    local stringKey = tostring(key)
+                    -- Only adopt the value when the live key is absent, so a legacy entry
+                    -- cannot resurrect a row the user has since re-shown.
+                    if typeVis[stringKey] == nil then
+                        typeVis[stringKey] = typeVis[key]
+                    end
+                    typeVis[key] = nil
+                    changed = true
+                end
+            end
+        end
+    end
+    return changed
+end
+
 local resY = AshitaCore:GetConfigurationManager():GetFloat('boot', 'ffxi.registry', '0002', 768)
 local function getEffectiveScale()
     if prSettings.scale and prSettings.scale > 0 then
@@ -447,11 +523,20 @@ local function statusEffectsOpts()
 end
 
 local function rebuildWindow()
+    local repaired = sanitizeScale()
+    repaired = sanitizeRecastVisible() or repaired
+    repaired = pruneDeadSettings() or repaired
     layout = loadLayout()
     local styleName = prSettings.layout or 'ffxi'
     local styleOverrides = prSettings.layoutOverrides and prSettings.layoutOverrides[styleName]
     if styleOverrides and next(styleOverrides) then
         layoutEditor.applyOverrides(layout, styleOverrides)
+        -- Repair after applying, so a hand-edited out-of-range value is written back as the
+        -- value actually in use rather than lingering in settings.
+        repaired = layoutEditor.sanitizeOverrides(styleOverrides, layout) > 0 or repaired
+    end
+    if repaired then
+        settings.save()
     end
     petFrame.destroy()
     petFrame.initialize(sprites, layout, prSettings.anchor, prSettings.alignBottom, getEffectiveScale(), statusEffectsOpts())
@@ -481,6 +566,7 @@ local function buildCallbacks()
             prSettings.layout = name
             settings.save()
             rebuildWindow()
+            layoutEditor.invalidateBase()
         end,
         onScale = function(v)
             prSettings.scale = v
@@ -545,6 +631,7 @@ local function buildCallbacks()
             prSettings = settings.load(defaultSettings)
             data.init()
             rebuildWindow()
+            layoutEditor.invalidateBase()
             configWindow.initialize(addon.path .. 'layouts/', true)
             vprint(chat.header(addon.name) .. chat.message('Reloaded.'))
         end,
@@ -634,6 +721,7 @@ ashita.events.register('load', 'petsreborn_load_cb', function()
         if s then
             prSettings = s
             rebuildWindow()
+            layoutEditor.invalidateBase()
         end
     end)
 
@@ -866,6 +954,7 @@ ashita.events.register('command', 'petsreborn_command_cb', function(e)
         prSettings = settings.load(defaultSettings)
         data.init()
         rebuildWindow()
+        layoutEditor.invalidateBase()
         configWindow.initialize(addon.path .. 'layouts/', true)
         vprint(chat.header(addon.name) .. chat.message('Reloaded.'))
     elseif cmd == 'debug' then

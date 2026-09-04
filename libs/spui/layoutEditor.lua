@@ -11,18 +11,7 @@ local SKIP_KEYS = {
     _meta = true,
 }
 
-local HIGHLIGHT_COLOR = { 0.6, 0.9, 1.0, 1.0 }
-local EMPTY_TABLE = {}
-local BASE_INPUT_START_X = 160
-local LABEL_GAP = 8
-
 local reg = nil
-local cachedBase = nil
-local cachedWidth = nil
-local draftNumbers = {}
-local draftCoords = {}
-local draftStrings = {}
-local draftColors = {}
 
 local function splitKeypath(path)
     local parts = {}
@@ -52,6 +41,120 @@ local function getByKeypath(t, path)
 
     return node
 end
+
+-- Sibling lookup for clamps whose bound depends on a neighbouring key.
+-- layoutRef is the table being written by applyOverrides; the editor path has none
+-- and reads the live layout instead.
+local function siblingValue(path, siblingKey, layoutRef)
+    local parent = path:match('^(.*)%.[^.]+$')
+    if not parent then return nil end
+    local layout = layoutRef
+    if not layout then
+        if not reg or not reg.getLayout then return nil end
+        layout = reg.getLayout()
+    end
+    local node = getByKeypath(layout, parent)
+    if type(node) ~= 'table' then return nil end
+    return node[siblingKey]
+end
+
+local function iconGapMin(path, layoutRef)
+    local iconSize = siblingValue(path, 'iconSize', layoutRef)
+    return -(type(iconSize) == 'number' and iconSize or 64)
+end
+
+-- Numeric layout key ranges by final path segment: { min, max, isInteger }.
+-- min/max may be a function(path) for bounds resolved from a sibling key.
+-- Scalar and coord contexts need separate tables: 'size' and 'iconSize' are font height
+-- and icon pixel size as scalars, image width and height as coord components.
+-- Offset keys (pos, firstRowPos, pctOffset, raisedOffset, offset) stay absent: layouts ship them negative.
+local SCALAR_CLAMPS = {
+    size         = { 6, 200 },        -- font height; 0 or less renders nothing and shrinks the drag rect
+    strokeWidth  = { 0, 20 },
+    iconSize     = { 1, 128 },
+    iconGap      = { iconGapMin, 64 },
+    iconZOrder   = { 0, 100, true },
+    maxIcons     = { 0, 32, true },
+    maxPips      = { 0, 8, true },
+    rowHeight    = { 1, 200 },
+    columnWidth  = { 0, 500 },
+    baseWidth    = { 1, 2000 },       -- 0 or less makes the window undraggable
+    marginBottom = { -50, 200 },      -- offset; a large negative collapses the drag rect
+    animSpeed    = { 0, 1 },
+    alphaFloor   = { 0, 1 },
+    period       = { 0.05, 60 },
+    columns      = { 1, 6, true },    -- VanaVista; used as a divisor
+    rows         = { 1, 18, true },   -- VanaVista
+    maxChars     = { 0, 64, true },   -- VanaVista
+}
+
+local COORD_CLAMPS = {
+    size          = { 0, 4000 },     -- image WxH; the editor does not expose sprite mirroring
+    iconSize      = { 1, 256 },
+    scale         = { 0.05, 10 },    -- uiElement scale multiplier
+    spacing       = { -64, 256 },    -- VanaVista; negative = deliberate icon overlap
+    numIconsByRow = { 0, 32, true }, -- VanaVista
+    offsetByRow   = { 0, 32, true }, -- VanaVista
+}
+
+-- Resolves the clamp for a path. A trailing numeric segment means a coord component,
+-- so the semantic key is the segment before it.
+local function clampEntry(path)
+    local parts = splitKeypath(path)
+    local last = parts[#parts]
+    if #parts > 1 and tonumber(last) ~= nil then
+        return COORD_CLAMPS[parts[#parts - 1]]
+    end
+    return SCALAR_CLAMPS[last]
+end
+
+-- True when a bound is resolved from a sibling key, so the sibling must be final first.
+local function hasSiblingBound(path)
+    local entry = clampEntry(path)
+    return entry ~= nil and (type(entry[1]) == 'function' or type(entry[2]) == 'function')
+end
+
+local function clampFor(path, layoutRef)
+    local entry = clampEntry(path)
+    if not entry then return nil end
+
+    local minV, maxV = entry[1], entry[2]
+    if type(minV) == 'function' then
+        minV = minV(path, layoutRef)
+    end
+    if type(maxV) == 'function' then
+        maxV = maxV(path, layoutRef)
+    end
+    return minV, maxV, entry[3]
+end
+
+local function clampValue(path, value, layoutRef)
+    if type(value) ~= 'number' then return value end
+    local minV, maxV, isInt = clampFor(path, layoutRef)
+    if minV == nil and maxV == nil then return value end
+    if minV and value < minV then
+        value = minV
+    end
+    if maxV and value > maxV then
+        value = maxV
+    end
+    if isInt then
+        value = math.floor(value + 0.5)
+    end
+    return value
+end
+
+local HIGHLIGHT_COLOR = { 0.6, 0.9, 1.0, 1.0 }
+local EMPTY_TABLE = {}
+local BASE_INPUT_START_X = 160
+local LABEL_GAP = 8
+
+local cachedBase = nil
+local cachedWidth = nil
+local draftNumbers = {}
+local draftCoords = {}
+local draftStrings = {}
+local draftColors = {}
 
 local function setByKeypath(t, path, value)
     if type(t) ~= 'table' or type(path) ~= 'string' or path == '' then
@@ -179,6 +282,18 @@ local function floatsToHex(floats)
     return string.format('#%02X%02X%02X%02X', r, g, b, a)
 end
 
+-- floatsToHex emits 8 uppercase digits; base layouts may use 6-digit or lowercase hex.
+-- Canonical form for commitOverride's base-value comparison.
+local function normalizeColor(value)
+    if isColorString(value) then
+        local rgba = spuiUtils:colorFromHex(value)
+        if rgba then
+            return string.format('#%02X%02X%02X%02X', rgba.r or 255, rgba.g or 255, rgba.b or 255, rgba.a or 255)
+        end
+    end
+    return value
+end
+
 local function valuesEqual(a, b)
     if type(a) ~= type(b) then
         return false
@@ -238,8 +353,10 @@ local function commitOverride(path, value)
         return
     end
 
+    value = clampValue(path, value)
+
     local baseValue = getByKeypath(cachedBase, path)
-    if valuesEqual(baseValue, value) then
+    if valuesEqual(normalizeColor(baseValue), normalizeColor(value)) then
         reg.deleteOverride(path)
     else
         reg.setOverride(path, value)
@@ -278,8 +395,17 @@ local function drawNumberWidget(path, key, value)
     local isOverridden = currentOverrides()[path] ~= nil
     drawLabel(key, isOverridden)
     imgui.SetNextItemWidth(78)
-    imgui.DragFloat('##' .. path, draft, 0.5, 0, 0, '%.1f')
+    local minV, maxV, isInt = clampFor(path)
+    -- AlwaysClamp implies ClampZeroRange, which clamps to 0 when v_min == v_max == 0.
+    -- Unbounded keys pass 0, 0, so the flag must only be set for a real range.
+    local flags = ImGuiSliderFlags_None
+    if minV and maxV then
+        flags = ImGuiSliderFlags_AlwaysClamp
+    end
+    imgui.DragFloat('##' .. path, draft, isInt and 1.0 or 0.5, minV or 0, maxV or 0,
+        isInt and '%.0f' or '%.1f', flags)
     if imgui.IsItemDeactivatedAfterEdit() then
+        draft[1] = clampValue(path, draft[1])
         commitOverride(path, draft[1])
     elseif not imgui.IsItemActive() and value ~= draft[1] and currentOverrides()[path] == nil then
         draft[1] = value
@@ -374,11 +500,20 @@ local function drawCoordWidget(path, key, value)
         imgui.SetNextItemWidth(52)
         local label = (i == 1 and 'X' or i == 2 and 'Y' or i == 3 and 'Z' or 'W') .. '##' .. path .. '.' .. i
         local component = { draft[i] }
-        if imgui.DragFloat(label, component, 1.0, 0, 0, '%.1f') then
+        local componentPath = path .. '.' .. i
+        local minV, maxV, isInt = clampFor(componentPath)
+        local flags = ImGuiSliderFlags_None
+        if minV and maxV then
+            flags = ImGuiSliderFlags_AlwaysClamp
+        end
+        local changed = imgui.DragFloat(label, component, 1.0, minV or 0, maxV or 0,
+            isInt and '%.0f' or '%.1f', flags)
+        if changed then
             draft[i] = component[1]
         end
         if imgui.IsItemDeactivatedAfterEdit() then
-            commitOverride(path .. '.' .. i, draft[i])
+            draft[i] = clampValue(componentPath, draft[i])
+            commitOverride(componentPath, draft[i])
             draftCoords[path] = nil
             return
         end
@@ -489,6 +624,36 @@ function M.register(opts)
     draftColors = {}
 end
 
+-- Must be called when the active style changes: cachedBase drives the
+-- "same as base -> delete the override" test in commitOverride.
+function M.invalidateBase()
+    if reg and reg.getBase then
+        cachedBase = reg.getBase()
+    end
+    cachedWidth = nil
+    draftNumbers = {}
+    draftCoords = {}
+    draftStrings = {}
+    draftColors = {}
+end
+
+-- Repairs stored overrides in place so settings hold the values actually rendered.
+-- Pass the layout AFTER applyOverrides so sibling-derived bounds resolve identically.
+-- Returns the number of entries changed.
+function M.sanitizeOverrides(overrides, layoutRef)
+    if type(overrides) ~= 'table' then return 0 end
+
+    local repaired = 0
+    for path, value in pairs(overrides) do
+        local fixed = clampValue(path, value, layoutRef)
+        if fixed ~= value then
+            overrides[path] = fixed
+            repaired = repaired + 1
+        end
+    end
+    return repaired
+end
+
 function M.isRegistered()
     return reg ~= nil
 end
@@ -499,8 +664,19 @@ function M.applyOverrides(layout, overrides)
     end
 
     cachedWidth = nil
+    -- pairs order is arbitrary, so sibling-dependent clamps run in a second pass
+    -- once the keys they read hold their final values.
+    local deferred = nil
     for path, value in pairs(overrides) do
-        setByKeypath(layout, path, value)
+        if hasSiblingBound(path) then
+            deferred = deferred or {}
+            deferred[path] = value
+        else
+            setByKeypath(layout, path, clampValue(path, value, layout))
+        end
+    end
+    for path, value in pairs(deferred or EMPTY_TABLE) do
+        setByKeypath(layout, path, clampValue(path, value, layout))
     end
     return layout
 end

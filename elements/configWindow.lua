@@ -302,7 +302,8 @@ function M.draw(prSettings, cb, debugViewType)
                     local scaleVal = { prSettings.scale > 0 and prSettings.scale or 1.0 }
                     imgui.SetCursorPosX(imgui.GetCursorPosX() + pad)
                     imgui.SetNextItemWidth(itemW)
-                    if imgui.SliderFloat('##scaleslider', scaleVal, 0.25, 2.5, 'Scale: %.2f') then
+                    if imgui.SliderFloat('##scaleslider', scaleVal, 0.25, 2.5, 'Scale: %.2f',
+                        ImGuiSliderFlags_AlwaysClamp) then
                         cb.onScale(scaleVal[1])
                     end
                 end

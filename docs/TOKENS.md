@@ -146,6 +146,22 @@ hp = {
 
 ---
 
+## Layout Editor Value Ranges
+
+Numeric fields in the in-game layout editor (`/pr` → Layout) are range-clamped, so a value typed
+or dragged outside a key's range settles at the nearest bound rather than the entered number.
+Font `size` floors at 6, image dimensions at 0, `baseWidth` at 1; counts (`maxIcons`, `maxPips`)
+round to whole numbers.
+
+Offset keys — `pos`, `firstRowPos`, `pctOffset`, `raisedOffset`, `offset` — are deliberately
+**not** clamped, because layouts ship them negative.
+
+Clamps also validate saved data. A hand-edited out-of-range override is corrected to the nearest
+bound on load and written back, so `settings.json` always holds the value actually in use.
+The `scale` setting is validated the same way: `0` (auto), or `0.25`-`2.5`.
+
+---
+
 ## Threshold Color System
 
 When `bind.color = 'threshold'`, color is resolved
