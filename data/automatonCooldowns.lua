@@ -3,9 +3,7 @@
 -- and the recasts the attachment abilities apply to themselves.
 --
 -- Magic is a two level gate: a global one advanced by any cast, plus a per-category floor.
--- Individual spells carry no recast of their own, so a spell is gated only by its category.
---
--- Every gate is filtered behind the automaton's 3s decision tick, so a countdown here can
+-- Individual spells carry no recast of their own, so a spell is gated only by its category-- Ev-- Every gate is filtered behind the automaton's 3s decision tick, so a countdown here can
 -- expire up to 3s before the automaton acts on it.
 --
 -- Trap: the magic gates are set by FRAME while their values come from HEAD. A magic head on a
@@ -41,18 +39,17 @@ M.magicFrames = {
 -- wrong, not just its numbers.
 M.categories = {
     -- Harlequin
-    [1] = { magic = 10, enfeeble = 12, heal = 12 },
+    [1] = { magic = 12.8, enfeeble = 12.8, heal = 12 },
     -- Valoredge
-    [2] = { magic = 10, heal = 20 },
+    [2] = { magic = 12.8, heal = 20 },
     -- Sharpshot
-    [3] = { magic = 10, enfeeble = 12, heal = 20 },
-    -- Stormwaker. elemental is bounded at >= 36.35 by priority starvation rather than measured:
-    -- enfeeble outranks it on this head unless Ice is up.
-    [4] = { magic = 12.8, enfeeble = 10, heal = 20, elemental = 25, enhance = 25 },
+    [3] = { magic = 12.8, enfeeble = 12, heal = 20 },
+    -- Stormwaker
+    [4] = { magic = 12.8, enfeeble = 12.8, heal = 20, elemental = 25, enhance = 25 },
     -- Soulsoother
-    [5] = { magic = 8, enfeeble = 10, heal = 10, status = 10, enhance = 25 },
+    [5] = { magic = 12.8, enfeeble = 12.8, heal = 10, status = 10, enhance = 15 },
     -- Spiritreaver
-    [6] = { magic = 12.8, enfeeble = 10, elemental = 35, enhance = 35 },
+    [6] = { magic = 6.4, enfeeble = 6.4, elemental = 35, enhance = 35 },
 }
 
 M.CATEGORY_LABELS = {
