@@ -126,7 +126,7 @@ hp = {
             value        = 'pet.hppPct',   -- display text (string or format string)
             color        = 'threshold',
             colorValue   = 'pet.hppNorm',  -- normalized input for threshold lookup
-            defaultColor = '#F0FFFFFF',    -- applied when above all thresholds
+            -- defaultColor omitted: the element's own color is used above all thresholds
         },
     },
 }
@@ -142,7 +142,7 @@ hp = {
 | `value` | uiText, uiBar | Text: display string or `{token}` format. Bar: animated fill (0–1) |
 | `color` | uiText, uiBar | `'threshold'` resolves from parent thresholds table |
 | `colorValue` | uiText, uiBar | Normalized (0–1) input for threshold lookup; falls back to `value` |
-| `defaultColor` | uiText, uiBar | `'#RRGGBBAA'` applied when above all thresholds (prevents stuck color) |
+| `defaultColor` | uiText, uiBar | `'#RRGGBBAA'` applied when above all thresholds (prevents stuck color). Optional on uiText — omit to use the element's own `color` |
 
 ---
 
@@ -177,7 +177,7 @@ thresholds = {
 ```
 
 Checked in order, first match (`tokenValue < t.below`) wins. No match → `thresholds.default`
-→ `imgBar.color` (static fallback). Children inherit `thresholds` from parent composite unless
+→ `bind.defaultColor` → the element's own `color` (uiText) or `imgBar.color` (uiBar). Children inherit `thresholds` from parent composite unless
 they define their own.
 
 ---

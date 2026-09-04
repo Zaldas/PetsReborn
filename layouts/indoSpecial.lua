@@ -116,7 +116,6 @@ return {
                     value         = 'target.hppPct',
                     color        = 'threshold',
                     colorValue   = 'target.hppNorm',
-                    defaultColor = '#F0FFFFFF',
                     visible      = 'target.active',
                     visibleAnd   = 'ui.showTargetBar',
                 },
@@ -229,7 +228,6 @@ return {
                     value         = 'pet.hpText',
                     color        = 'threshold',
                     colorValue   = 'pet.hppNorm',
-                    defaultColor = '#F0FFFFFF',
                     visible      = 'pet.active',
                 },
             },
@@ -346,7 +344,7 @@ return {
             timer = {
                 font        = 'Grammara',
                 size        = 11,
-                color       = '#F0FFFFFF',
+                color       = '#F0F0F0FF',
                 stroke      = '#062D5480',
                 strokeWidth = 1,
                 align       = 'right',
@@ -539,12 +537,11 @@ return {
             -- Percentage colour is by RISK, not by element. Keyed on pet.maneuver[N].norm,
             -- which is pct/100 clamped to 0..1, so `below = 0.40` is exactly "under 40%
             -- chance". There is no settings key for this ramp.
-            -- The amber band is a final catch-all entry, not a `default` key:
-            -- `thresholds.default` is a valid Utils.resolveThreshold input but makes this a
+            -- Above the last band the ramp falls through to txt.color, so the amber is
+            -- authored there. A `thresholds.default` key would work too but makes this a
             -- mixed array/dictionary table, which selene rejects.
             thresholds = {
                 { below = 0.40, color = '#F0E6C8FF' },  -- parchment: below the warn point
-                { below = 1.01, color = '#FFAE32FF' },  -- amber: at or above it (norm is clamped 0..1)
             },
 
             -- Percentage placement, measured from PIP 1, not from the row origin: pairing
@@ -571,7 +568,7 @@ return {
                 font        = 'Segoe UI',
                 bold          = true,
                 size        = 11,
-                color       = '#F0FFFFFF',
+                color       = '#FFAE32FF',   -- amber: at or above the warn point
                 stroke      = '#062D5480',
                 strokeWidth = 1,
                 zOrder      = 6,

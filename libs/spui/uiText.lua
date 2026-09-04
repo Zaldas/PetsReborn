@@ -78,6 +78,10 @@ function uiText:init(layout)
         local c = layout and layout.color and utils:colorFromHex(layout.color)
         private[self].color = c or { r = 255, g = 255, b = 255, a = 255 }
 
+        -- :color() mutates the color table in place, so baseColor is a copy.
+        local base = private[self].color
+        private[self].baseColor = { r = base.r, g = base.g, b = base.b, a = base.a }
+
         local s = layout and layout.stroke and utils:colorFromHex(layout.stroke)
         private[self].stroke = s or { r = 0, g = 0, b = 0, a = 200 }
 
@@ -130,6 +134,12 @@ function uiText:update(text)
             self.fontObj:set_text(text or '')
         end
     end
+end
+
+-- The layout's declared color. Returned by reference; callers must not mutate it.
+function uiText:baseColor()
+    if not private[self] then return nil end
+    return private[self].baseColor
 end
 
 -- Sets text color from a color table {r,g,b,a} or individual r,g,b values

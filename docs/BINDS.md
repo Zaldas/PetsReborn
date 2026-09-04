@@ -106,10 +106,9 @@ bind = {
 
 -- text
 bind = {
-    value        = 'pet.hppPct',
-    color        = 'threshold',
-    colorValue   = 'pet.hppNorm',
-    defaultColor = '#F0FFFFFF',
+    value      = 'pet.hppPct',
+    color      = 'threshold',
+    colorValue = 'pet.hppNorm',
 }
 ```
 
@@ -127,21 +126,31 @@ If absent, falls back to the `value` token.
 
 ---
 
-### `defaultColor` — fallback color when above all thresholds (uiText only)
+### `defaultColor` — optional fallback when above all thresholds (uiText only)
 
 ```lua
 defaultColor = '#RRGGBBAA'
 ```
 
-Hex color applied when `colorValue` is above all threshold entries (i.e. full health). Without this, text color is not reset on recovery — it stays at the last matched threshold color.
+Hex color applied when `colorValue` is above all threshold entries (i.e. full health), so text
+color is reset on recovery instead of staying at the last matched threshold color.
+
+**Omit it on a uiText and the element's own `color` is used instead.** Prefer omitting: a
+`defaultColor` equal to `color` is applied over the element every frame, which makes the
+element's `color` unoverridable from the layout editor.
 
 ```lua
-bind = {
-    color        = 'threshold',
-    colorValue   = 'pet.hppNorm',
-    defaultColor = '#F0FFFFFF',
+txt = {
+    color = '#F0FFFFFF',            -- used above all thresholds, and editable
+    bind  = {
+        color      = 'threshold',
+        colorValue = 'pet.hppNorm',
+    },
 }
 ```
+
+Resolution order: matching threshold → `thresholds.default` → `bind.defaultColor` →
+the element's layout `color`.
 
 ---
 
@@ -157,11 +166,12 @@ hp = {
         { below = 0.75, color = '#F8BA80FF' },  -- orange hp < 75%
     },
     bar = { bind = { value = 'pet.hppNorm', color = 'threshold' } },
-    txt = { bind = { value = 'pet.hppPct',  color = 'threshold', colorValue = 'pet.hppNorm', defaultColor = '#F0FFFFFF' } },
+    txt = { color = '#F0FFFFFF', bind = { value = 'pet.hppPct', color = 'threshold', colorValue = 'pet.hppNorm' } },
 }
 ```
 
-Thresholds are checked in order; first `value < below` wins. If none match, `defaultColor` is used (text only).
+Thresholds are checked in order; first `value < below` wins. If none match, text falls back to
+`thresholds.default`, then `bind.defaultColor`, then the element's own `color`.
 
 ---
 
@@ -174,7 +184,7 @@ Thresholds are checked in order; first `value < below` wins. If none match, `def
 | `value`        | ✓      | ✓     | —       | —            |
 | `color`        | ✓      | ✓     | —       | —            |
 | `colorValue`   | ✓      | ✓     | —       | —            |
-| `defaultColor` | ✓      | ✓     | —       | —            |
+| `defaultColor` | optional | ✓   | —       | —            |
 
 > **Note — img/bg dynamic binds:** `uiImage` and `uiBackground` currently support only `visible`/`visibleAnd`. Dynamic binding (path, color, opacity from tokens) is a planned future expansion.
 
@@ -206,12 +216,12 @@ hp = {
     txt = {
         font = 'Grammara', size = 10, align = 'right',
         pos  = {105, -1}, zOrder = 6,
+        color = '#F0FFFFFF',
         bind = {
-            value        = 'pet.hppPct',
-            color        = 'threshold',
-            colorValue   = 'pet.hppNorm',
-            defaultColor = '#F0FFFFFF',
-            visible      = 'pet.active',
+            value      = 'pet.hppPct',
+            color      = 'threshold',
+            colorValue = 'pet.hppNorm',
+            visible    = 'pet.active',
         },
     },
     -- optional: standalone image overlay on this section
@@ -363,8 +373,9 @@ thresholds = {
 `elementColors` is indexed 1-8 in element order and is applied in both pip states.
 `thresholds` colours the percentage and is keyed on `pet.maneuver[N].norm`.
 
-The ramp must end in a `{ below = 1.01 }` catch-all rather than carrying a `default` key: selene's
-`mixed_table` rule rejects a string key beside array entries.
+Above the last band the ramp falls through to `txt.color`, so that key carries the top-end
+colour and is editable in the layout editor. A `thresholds.default` key also works, but makes
+the table a mixed array/dictionary, which selene's `mixed_table` rule rejects.
 
 ---
 
@@ -407,6 +418,47 @@ required. `pos` moves the whole panel; the `pos` inside each slice is an offset 
 This section must carry **no** `sliceBorder`. Border values are texture pixels scaled by
 `destH / nativeH`, so the frame's `{60, 60, 0, 0}` would exceed the narrow column's width and drop
 the texture middle.
+
+---
+
+## Recast Row Keys (`petFrame.recast`)
+
+### `timer` -- countdown font and colour
+
+```lua
+timer = {
+    font        = 'Grammara',
+    size        = 11,
+    color       = '#F0F0F0FF',
+    stroke      = '#062D5480',
+    strokeWidth = 1,
+    align       = 'right',
+    pos         = {55, 5},
+    zOrder      = 6,
+    thresholds  = {
+        { below = 0.01, color = '#66FF66FF' },  -- ready
+        { below = 0.30, color = '#FFBB44FF' },  -- nearly ready
+    },
+},
+```
+
+The timer has no `bind`. `color` is the neutral countdown colour and is the only colour
+`recastRows` reads from the layout.
+
+The ready and warn colours are fixed in `modules/recastRows.lua` and are **not** layout keys.
+`thresholds` here is **not read** — the ramp cannot express this timer's states, because
+`pet.<slot>.norm` is `0` for every non-charge ability whether or not it is ready, so a
+`below` entry would colour a full cooldown as ready. Readiness is taken from the
+`pet.<slot>.ready` flag instead, and `norm` (fraction of the recast *remaining*) only
+carries a real value for charge abilities.
+
+| State | Colour | Source |
+|-------|--------|--------|
+| ready | green  | `COLOR_READY`, module constant |
+| `norm > 0.70` (just used, charge abilities) | orange | `COLOR_WARN`, module constant |
+| every other state, and heal-timer rows | `color` | layout |
+
+Each pet type builds its own recast rows, so `color` is re-read per pet type.
 
 ---
 

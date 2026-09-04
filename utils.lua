@@ -75,7 +75,8 @@ end
 --   value        = 'tokenName'  → uiBar: setValue+update (animated fill); uiText: display string
 --   color        = 'threshold'  → threshold color; uiBar: setColor; uiText: color()
 --   colorValue   = 'tokenName'  → normalized value token for color='threshold' lookup
---   defaultColor = '#RRGGBBAA'  → fallback color when above all thresholds (uiText/uiBar)
+--   defaultColor = '#RRGGBBAA'  → fallback color when above all thresholds (uiText/uiBar).
+--                                 Omit on uiText to fall back to the element's layout color.
 function Utils.applyBinds(element, bind, tokens, visToken, thresholds)
     if not element or not bind then return end
 
@@ -131,8 +132,13 @@ function Utils.applyBinds(element, bind, tokens, visToken, thresholds)
             -- uiText path
             local normKey = bind.colorValue or bind.value
             local norm    = normKey and (tokens[normKey] or 0) or 0
-            local default = bind.defaultColor and Utils.hexToColor(bind.defaultColor) or nil
-            local color   = Utils.resolveThreshold(thresholds, norm, default)
+            local default
+            if bind.defaultColor then
+                default = Utils.hexToColor(bind.defaultColor)
+            elseif element.baseColor then
+                default = element:baseColor()
+            end
+            local color = Utils.resolveThreshold(thresholds, norm, default)
             if color then element:color(color) end
         end
     end

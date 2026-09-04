@@ -11,6 +11,8 @@ local Utils   = require('utils')
 local VIS_TOKEN = Utils.VIS_TOKEN
 local MAX_PIPS  = 3
 
+-- Ready and warn states are not layout-driven: recast.timer.thresholds cannot express
+-- them, because norm is 0 for every non-charge ability whether or not it is ready.
 local COLOR_READY   = { r = 102, g = 255, b = 102, a = 255 }
 local COLOR_WARN    = { r = 255, g = 187, b = 68,  a = 255 }
 local COLOR_DEFAULT = { r = 240, g = 240, b = 240, a = 255 }
@@ -26,6 +28,7 @@ function RecastRows.new()
     local petPresent      = false
     local pipColorFull    = nil
     local pipColorEmpty   = nil
+    local timerColor      = COLOR_DEFAULT
 
     local self = {}
 
@@ -81,6 +84,8 @@ function RecastRows.new()
                 pipColorFull  = Utils.hexToColor(chL.pip.color)      or { r = 160, g = 200, b = 255, a = 255 }
                 pipColorEmpty = Utils.hexToColor(chL.pip.colorEmpty) or { r =  40, g =  40, b =  72, a = 255 }
             end
+
+            timerColor = Utils.hexToColor(L.recast.timer.color) or COLOR_DEFAULT
 
             for i = 1, #slots do
                 local rowX = rcBase.x + L.recast.firstRowPos[1]
@@ -229,7 +234,7 @@ function RecastRows.new()
                     row.nameText:update(label)
                     local timerVal = tokens[slot.tokenKey] or slot.fallback or '--'
                     row.timerText:update(timerVal)
-                    row.timerText:color(COLOR_DEFAULT)
+                    row.timerText:color(timerColor)
                 end
             else
                 local keys       = row.keys
@@ -258,7 +263,7 @@ function RecastRows.new()
                     elseif norm > 0.70 then
                         row.timerText:color(COLOR_WARN)
                     else
-                        row.timerText:color(COLOR_DEFAULT)
+                        row.timerText:color(timerColor)
                     end
 
                     if row.chargesText and maxCharges > 0 then

@@ -331,10 +331,7 @@ function ManeuverRows.new()
         pctAlign = resolvePctAlign(L.pctAlign)
         computeMetrics(L)
 
-        -- The ramp's fallback is the text's own authored colour. All three bundled layouts end
-        -- their ramp in a `{ below = 1.01 }` catch-all -- selene's mixed_table rule rejects the
-        -- `default` key resolveThreshold would otherwise accept -- so this only fires for a
-        -- custom layout with a partial ramp.
+        -- The ramp's fallback is the text's own authored colour, used above the last band.
         pctBaseColor   = Utils.hexToColor(L.txt and L.txt.color) or WHITE
         recastColor    = Utils.hexToColor(L.recastTxt and L.recastTxt.color) or WHITE
         overloadColor  = Utils.hexToColor(L.recastTxt and L.recastTxt.overloadColor)
