@@ -570,8 +570,10 @@ local function buildCallbacks()
         end,
         onScale = function(v)
             prSettings.scale = v
-            settings.save()
             rebuildWindow()
+        end,
+        onSave = function()
+            settings.save()
         end,
         onDebugView = applyDebugView,
         onShowMpBar = function(v)

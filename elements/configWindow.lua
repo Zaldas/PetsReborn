@@ -6,6 +6,7 @@ local imgui       = require('imgui')
 local petAbilities = require('data/petAbilities')
 local automatonIcd = require('modules/automatonIcd')
 local layoutEditor = require('libs/spui/layoutEditor')
+local uiTheme      = require('libs/uiTheme')
 
 local M = {}
 
@@ -92,62 +93,6 @@ local function scanStyles(layoutsPath)
 end
 
 -----------------------------------------------------------------------
--- Style helpers
------------------------------------------------------------------------
-
--- Blue gradient fade subheading (solid left → transparent right).
-local function drawGradientHeader(text, width, helpText)
-    local drawlist    = imgui.GetWindowDrawList()
-    local x, y       = imgui.GetCursorScreenPos()
-    local lineH       = imgui.GetTextLineHeightWithSpacing()
-    local gradWidth   = width * 0.75
-    local colLeft     = { 0.25, 0.40, 0.85, 1.00 }
-    local colRight    = { colLeft[1], colLeft[2], colLeft[3], 0.00 }
-    local colLeftU32  = imgui.GetColorU32(colLeft)
-    local colRightU32 = imgui.GetColorU32(colRight)
-
-    drawlist:AddRectFilledMultiColor(
-        { x, y },
-        { x + gradWidth, y + lineH },
-        colLeftU32, colRightU32, colRightU32, colLeftU32
-    )
-
-    imgui.SetCursorScreenPos({ x + 4, y + 2 })
-    imgui.Text(text)
-    if helpText then
-        imgui.SameLine()
-        imgui.TextDisabled('(?)')
-        if imgui.IsItemHovered() then
-            imgui.SetTooltip(helpText)
-        end
-    end
-
-    local _, newY = imgui.GetCursorScreenPos()
-    imgui.SetCursorScreenPos({ x, newY })
-    imgui.Spacing()
-end
-
--- Rounded primary (blue) or ghost (transparent) button.
-local function styledButton(label, size, isPrimary)
-    imgui.PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0)
-
-    if isPrimary then
-        imgui.PushStyleColor(ImGuiCol_Button,        { 0.25, 0.40, 0.85, 1.00 })
-        imgui.PushStyleColor(ImGuiCol_ButtonHovered, { 0.30, 0.48, 0.95, 1.00 })
-        imgui.PushStyleColor(ImGuiCol_ButtonActive,  { 0.18, 0.32, 0.70, 1.00 })
-    else
-        imgui.PushStyleColor(ImGuiCol_Button,        { 0.00, 0.00, 0.00, 0.00 })
-        imgui.PushStyleColor(ImGuiCol_ButtonHovered, { 1.00, 1.00, 1.00, 0.12 })
-        imgui.PushStyleColor(ImGuiCol_ButtonActive,  { 1.00, 1.00, 1.00, 0.20 })
-    end
-
-    local clicked = imgui.Button(label, size)
-    imgui.PopStyleColor(3)
-    imgui.PopStyleVar(1)
-    return clicked
-end
-
------------------------------------------------------------------------
 -- Public API
 -----------------------------------------------------------------------
 
@@ -176,42 +121,27 @@ end
 -- Draw the config window. Call every frame from d3d_present BEFORE the visibility guard.
 -- prSettings: the addon settings table (read for current values)
 -- cb: callbacks table with keys: onAlwaysShow, onAlignBottom, onStyle, onScale,
---     onDebugView, onResetPosition, onPrintState
+--     onDebugView, onResetPosition, onPrintState, onSave
 -- debugViewType: current debug view string or nil
 function M.draw(prSettings, cb, debugViewType)
     if not open then return end
 
-    local windowWidth = TAB_WIDTHS[currentTab] or 240
-    if currentTab == 'Layout' and layoutEditor.isRegistered() and layoutEditor.getSuggestedWidth then
-        windowWidth = layoutEditor.getSuggestedWidth()
-    end
-    windowWidth = math.max(windowWidth, minTabBarWidth())
-    imgui.SetNextWindowSize({windowWidth, 0}, 1)  -- per-tab width; height=0 auto-fits content
-
-    local visible = { true }
-    if imgui.Begin('PetsReborn.' .. addon.version, visible, IMGUI_NO_RESIZE) then
-
-        local avail  = imgui.GetContentRegionAvail()
-        local availW = type(avail) == 'table' and avail[1] or avail
-        local itemW  = availW * 0.80
-        local pad    = (availW - itemW) * 0.5
-        local indent = 6
-
+    local function drawBody()
         if imgui.BeginTabBar('pr_tabs') then
 
             -- ============================================================
-            -- General tab: Style + Preview, Options, Utilities.
+            -- General tab: Style + Preview, Options, action buttons.
             -- ============================================================
             if imgui.BeginTabItem('General') then
                 currentTab = 'General'
 
                 -- Style ------------------------------------------------
-                drawGradientHeader('Style', availW)
+                uiTheme.header('Style')
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + pad)
-                imgui.SetNextItemWidth(itemW)
+                imgui.Indent(uiTheme.indent)
+                imgui.SetNextItemWidth(uiTheme.comboWidth())
                 local currentStyle = prSettings.layout or 'ffxi'
-                if imgui.BeginCombo('##style', currentStyle) then
+                if imgui.BeginCombo('Style##style', currentStyle) then
                     for _, s in ipairs(styleList) do
                         local selected = (s.name == currentStyle)
                         local label = s.unsupported and (s.name .. ' (unsupported)') or s.name
@@ -223,21 +153,9 @@ function M.draw(prSettings, cb, debugViewType)
                     imgui.EndCombo()
                 end
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
-                imgui.Text('Preview:')
-                imgui.SameLine()
-                imgui.TextDisabled('(?)')
-                if imgui.IsItemHovered() then
-                    imgui.SetTooltip(
-                        'Render fake pet data to preview the window without an active pet.\n' ..
-                        'Active while the config is open; clears when you close it.'
-                    )
-                end
-
                 local currentDV = debugViewType or 'avatar'
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + pad)
-                imgui.SetNextItemWidth(itemW)
-                if imgui.BeginCombo('##debugview', currentDV) then
+                imgui.SetNextItemWidth(uiTheme.comboWidth())
+                if imgui.BeginCombo('Preview##debugview', currentDV) then
                     for _, t in ipairs(DEBUG_TYPES) do
                         local selected = (t == currentDV)
                         if imgui.Selectable(t, selected) then
@@ -247,74 +165,70 @@ function M.draw(prSettings, cb, debugViewType)
                     end
                     imgui.EndCombo()
                 end
+                uiTheme.helpMarker(
+                    'Render fake pet data to preview the window without an active pet.\n' ..
+                    'Active while the config is open; clears when you close it.'
+                )
+                imgui.Unindent(uiTheme.indent)
 
                 imgui.Spacing()
 
                 -- Options ----------------------------------------------
-                drawGradientHeader('Options', availW)
+                uiTheme.header('Options')
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
+                imgui.Indent(uiTheme.indent)
                 local alwaysShow = { prSettings.alwaysShow == true }
                 if imgui.Checkbox('Always show recasts', alwaysShow) then
                     cb.onAlwaysShow(alwaysShow[1])
                 end
-                if imgui.IsItemHovered() then
-                    imgui.SetTooltip('Show ability cooldowns even without an active pet')
-                end
+                uiTheme.helpMarker('Show ability cooldowns even without an active pet')
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
                 local alignBottom = { prSettings.alignBottom == true }
                 if imgui.Checkbox('Align bottom', alignBottom) then
                     cb.onAlignBottom(alignBottom[1])
                 end
-                if imgui.IsItemHovered() then
-                    imgui.SetTooltip('Anchor point is bottom-left; window grows upward')
-                end
+                uiTheme.helpMarker('Anchor point is bottom-left; window grows upward')
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
                 local verbose = { prSettings.verbose ~= false }
                 if imgui.Checkbox('Verbose', verbose) then
                     cb.onVerbose(verbose[1])
                 end
-                if imgui.IsItemHovered() then
-                    imgui.SetTooltip('Print confirmation messages when running commands like /pr reload.')
-                end
+                uiTheme.helpMarker('Print confirmation messages when running commands like /pr reload.')
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
                 local lockPosition = { prSettings.lockPosition == true }
                 if imgui.Checkbox('Lock position', lockPosition) then
                     cb.onLockPosition(lockPosition[1])
                 end
-                if imgui.IsItemHovered() then
-                    imgui.SetTooltip('Disable drag-to-move so the window cannot be accidentally repositioned.')
-                end
+                uiTheme.helpMarker('Disable drag-to-move so the window cannot be accidentally repositioned.')
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
                 local customScaleOn = { (prSettings.scale or 0) > 0 }
                 if imgui.Checkbox('Custom scale', customScaleOn) then
                     if customScaleOn[1] then cb.onScale(1.0) else cb.onScale(0) end
+                    cb.onSave()
                 end
-                if imgui.IsItemHovered() then
-                    imgui.SetTooltip('Override the automatic scale (based on resolution) with a manual multiplier.')
-                end
+                uiTheme.helpMarker('Override the automatic scale (based on resolution) with a manual multiplier.')
 
                 if customScaleOn[1] then
+                    imgui.Indent(uiTheme.subIndent)
                     local scaleVal = { prSettings.scale > 0 and prSettings.scale or 1.0 }
-                    imgui.SetCursorPosX(imgui.GetCursorPosX() + pad)
-                    imgui.SetNextItemWidth(itemW)
+                    imgui.SetNextItemWidth(uiTheme.comboWidth())
                     if imgui.SliderFloat('##scaleslider', scaleVal, 0.25, 2.5, 'Scale: %.2f',
                         ImGuiSliderFlags_AlwaysClamp) then
                         cb.onScale(scaleVal[1])
                     end
+                    if imgui.IsItemDeactivatedAfterEdit() then
+                        cb.onSave()
+                    end
+                    imgui.Unindent(uiTheme.subIndent)
                 end
+                imgui.Unindent(uiTheme.indent)
 
                 imgui.Spacing()
 
-                -- Utilities --------------------------------------------
-                drawGradientHeader('Utilities', availW)
+                imgui.Separator()
+                imgui.Spacing()
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + pad)
-                if styledButton('Reload##reloadbtn', {itemW, 0}, true) then
+                if uiTheme.centeredButton('Reload##reloadbtn', 'primary') then
                     cb.onReload()
                 end
                 if imgui.IsItemHovered() then
@@ -326,8 +240,7 @@ function M.draw(prSettings, cb, debugViewType)
 
                 imgui.Spacing()
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + pad)
-                if styledButton('Reset Position##resetbtn', {itemW, 0}, false) then
+                if uiTheme.centeredButton('Reset position##resetbtn', 'ghost') then
                     cb.onResetPosition()
                 end
                 if imgui.IsItemHovered() then
@@ -347,60 +260,54 @@ function M.draw(prSettings, cb, debugViewType)
                 currentTab = 'Display'
 
                 -- General Elements (all jobs) --------------------------
-                drawGradientHeader(
+                uiTheme.header(
                     'General Elements',
-                    availW,
                     'Choose which shared display elements are visible in the pet window.'
                 )
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
+                imgui.Indent(uiTheme.indent)
                 local showMp = { prSettings.showMpBar ~= false }
                 if imgui.Checkbox('MP bar', showMp) then
                     cb.onShowMpBar(showMp[1])
                 end
+                uiTheme.helpMarker('Show the pet MP bar.')
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
                 local showTp = { prSettings.showTpBar ~= false }
                 if imgui.Checkbox('TP bar', showTp) then
                     cb.onShowTpBar(showTp[1])
                 end
+                uiTheme.helpMarker('Show the pet TP bar.')
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
                 local showTargetBar = { prSettings.showTargetBar ~= false }
                 if imgui.Checkbox('Target bar', showTargetBar) then
                     cb.onShowTargetBar(showTargetBar[1])
                 end
+                uiTheme.helpMarker('Show the pet target bar.')
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
                 local showRecasts = { prSettings.showRecasts ~= false }
                 if imgui.Checkbox('Recast rows', showRecasts) then
                     cb.onShowRecasts(showRecasts[1])
                 end
+                uiTheme.helpMarker('Show the pet ability recast rows.')
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
                 local showManeuvers = { prSettings.showManeuvers ~= false }
                 if imgui.Checkbox('Maneuver column', showManeuvers) then
                     cb.onShowManeuvers(showManeuvers[1])
                 end
-                if imgui.IsItemHovered() then
-                    imgui.SetTooltip('Show the PUP maneuver and overload column. Automaton only.')
-                end
+                uiTheme.helpMarker('Show the PUP maneuver and overload column. Automaton only.')
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
                 local hideStatusWhenEmpty = { prSettings.hideStatusWhenEmpty ~= false }
                 if imgui.Checkbox('Hide status when empty', hideStatusWhenEmpty) then
                     cb.onHideStatusWhenEmpty(hideStatusWhenEmpty[1])
                 end
-                if imgui.IsItemHovered() then
-                    imgui.SetTooltip('Hide status effect icons when pet has no active effects.')
-                end
+                uiTheme.helpMarker('Hide status effect icons when pet has no active effects.')
+                imgui.Unindent(uiTheme.indent)
 
                 imgui.Spacing()
 
                 -- Recasts -----------------------------------------------
-                drawGradientHeader(
+                uiTheme.header(
                     'Recasts',
-                    availW,
                     'Choose which pet job recast abilities are visible in the pet window.'
                 )
 
@@ -408,21 +315,21 @@ function M.draw(prSettings, cb, debugViewType)
                     { key = 'avatar',    label = 'Avatar (SMN)'    },
                     { key = 'wyvern',    label = 'Wyvern (DRG)'    },
                     { key = 'automaton', label = 'Automaton (PUP)' },
-                    { key = 'jug',       label = 'Jug Pet (BST)'   },
+                    { key = 'jug',       label = 'Jug pet (BST)'   },
                     { key = 'charm',     label = 'Charm (BST)'     },
                 }
 
                 if not prSettings.recastVisible then prSettings.recastVisible = {} end
 
+                imgui.Indent(uiTheme.indent)
                 for _, typeEntry in ipairs(RECAST_TYPES) do
                     local petType  = typeEntry.key
                     local abilities = petAbilities.slots[petType] or {}
                     if #abilities > 0 then
-                        imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
                         if imgui.TreeNode(typeEntry.label) then
+                            imgui.Indent(uiTheme.subIndent)
                             local typeVis = prSettings.recastVisible[petType] or {}
                             for _, slot in ipairs(abilities) do
-                                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent * 2)
                                 local slotVis = { typeVis[tostring(slot.id)] ~= false }
                                 if imgui.Checkbox(slot.displayName .. '##rc_' .. petType .. '_' .. slot.id, slotVis) then
                                     cb.onRecastVisible(petType, slot.id, slotVis[1])
@@ -435,7 +342,6 @@ function M.draw(prSettings, cb, debugViewType)
                             if petType == 'automaton' then
                                 for _, slot in ipairs(automatonIcd.slots()) do
                                     if not slot.isAttachment then
-                                        imgui.SetCursorPosX(imgui.GetCursorPosX() + indent * 2)
                                         local slotVis = { typeVis[tostring(slot.id)] ~= false }
                                         if imgui.Checkbox(slot.displayName .. '##rc_' .. petType .. '_' .. slot.id, slotVis) then
                                             cb.onRecastVisible(petType, slot.id, slotVis[1])
@@ -443,10 +349,12 @@ function M.draw(prSettings, cb, debugViewType)
                                     end
                                 end
                             end
+                            imgui.Unindent(uiTheme.subIndent)
                             imgui.TreePop()
                         end
                     end
                 end
+                imgui.Unindent(uiTheme.indent)
 
                 imgui.EndTabItem()
             end
@@ -458,43 +366,26 @@ function M.draw(prSettings, cb, debugViewType)
                 currentTab = 'Automaton'
 
                 -- General -----------------------------------------------
-                drawGradientHeader(
+                uiTheme.header(
                     'General',
-                    availW,
                     'Settings that apply to the PUP automaton only.'
                 )
 
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
+                imgui.Indent(uiTheme.indent)
                 local showIcd = { prSettings.showAutomatonIcd ~= false }
                 if imgui.Checkbox('Internal cooldowns', showIcd) then
                     cb.onShowAutomatonIcd(showIcd[1])
                 end
-                if imgui.IsItemHovered() then
-                    imgui.SetTooltip(
-                        'Show the automaton\'s own action gates: the magic cooldowns its head\n' ..
-                        'sets, and the recasts of its attachment abilities.\n' ..
-                        'Neither is in client memory, so both are timed from the automaton\'s\n' ..
-                        'own actions, and read Ready until one has been seen.'
-                    )
-                end
-
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
-                imgui.Text('HP readout:')
-                imgui.SameLine()
-                imgui.TextDisabled('(?)')
-                if imgui.IsItemHovered() then
-                    -- No '%' in this string: SetTooltip is printf-style, so a literal percent
-                    -- sign is read as a format specifier.
-                    imgui.SetTooltip(
-                        'Value shows the automaton\'s exact HP, which only PUP reports.\n' ..
-                        'Percent shows HP percent instead, matching every other pet type.'
-                    )
-                end
+                uiTheme.helpMarker(
+                    'Show the automaton\'s own action gates: the magic cooldowns its head\n' ..
+                    'sets, and the recasts of its attachment abilities.\n' ..
+                    'Neither is in client memory, so both are timed from the automaton\'s\n' ..
+                    'own actions, and read Ready until one has been seen.'
+                )
 
                 local currentHpDisplay = prSettings.automatonHpDisplay or 'value'
-                imgui.SetCursorPosX(imgui.GetCursorPosX() + pad)
-                imgui.SetNextItemWidth(itemW)
-                if imgui.BeginCombo('##automatonhp', currentHpDisplay) then
+                imgui.SetNextItemWidth(uiTheme.comboWidth())
+                if imgui.BeginCombo('HP readout##automatonhp', currentHpDisplay) then
                     for _, mode in ipairs(HP_DISPLAY_MODES) do
                         local selected = (mode == currentHpDisplay)
                         if imgui.Selectable(mode, selected) then
@@ -504,13 +395,17 @@ function M.draw(prSettings, cb, debugViewType)
                     end
                     imgui.EndCombo()
                 end
+                uiTheme.helpMarker(
+                    'Value shows the automaton\'s exact HP, which only PUP reports.\n' ..
+                    'Percent shows HP percent instead, matching every other pet type.'
+                )
+                imgui.Unindent(uiTheme.indent)
 
                 imgui.Spacing()
 
                 -- Attachments -------------------------------------------
-                drawGradientHeader(
+                uiTheme.header(
                     'Attachments',
-                    availW,
                     'Recasts of the abilities attachments grant.\n' ..
                     'Every one is listed here whether or not it is fitted. A row reaches the\n' ..
                     'pet window only when the attachment is equipped AND ticked below, so\n' ..
@@ -521,21 +416,18 @@ function M.draw(prSettings, cb, debugViewType)
                 -- the Recasts section having seeded recastVisible.
                 local recastVisible = prSettings.recastVisible or {}
                 local attachmentVis = recastVisible.automaton or {}
+                imgui.Indent(uiTheme.indent)
                 for _, slot in ipairs(automatonIcd.attachmentOptions()) do
-                    imgui.SetCursorPosX(imgui.GetCursorPosX() + indent)
                     local slotVis = { attachmentVis[tostring(slot.id)] ~= false }
                     if imgui.Checkbox(slot.displayName .. '##at_' .. slot.id, slotVis) then
                         cb.onRecastVisible('automaton', slot.id, slotVis[1])
                     end
-                    imgui.SameLine()
-                    imgui.TextDisabled('(?)')
-                    if imgui.IsItemHovered() then
-                        -- Naming the ability explains nothing when it carries the attachment's
-                        -- own name, so those four describe what it does instead.
-                        imgui.SetTooltip(slot.effect
-                            or string.format('Casts %s.', slot.ability))
-                    end
+                    -- Naming the ability explains nothing when it carries the attachment's
+                    -- own name, so those four describe what it does instead.
+                    uiTheme.helpMarker(slot.effect
+                        or string.format('Casts %s.', slot.ability))
                 end
+                imgui.Unindent(uiTheme.indent)
 
                 imgui.EndTabItem()
             end
@@ -555,13 +447,29 @@ function M.draw(prSettings, cb, debugViewType)
             imgui.EndTabBar()
         end
     end
+
+    local n = uiTheme.push()
+    local windowWidth = TAB_WIDTHS[currentTab] or 240
+    if currentTab == 'Layout' and layoutEditor.isRegistered() and layoutEditor.getSuggestedWidth then
+        windowWidth = layoutEditor.getSuggestedWidth()
+    end
+    windowWidth = math.max(windowWidth, minTabBarWidth())
+    imgui.SetNextWindowSize({windowWidth, 0}, 1)  -- per-tab width; height=0 auto-fits content
+
+    local visible = { true }
+    local ok, err = true, nil
+    if imgui.Begin('PetsReborn.' .. addon.version, visible, IMGUI_NO_RESIZE) then
+        ok, err = pcall(drawBody)
+    end
     imgui.End()
+    uiTheme.pop(n)
 
     -- Window close button: also clears debug view if active
     if not visible[1] then
         if debugViewType then cb.onDebugView(nil) end
         open = false
     end
+    if not ok then error(err, 0) end
 end
 
 return M
