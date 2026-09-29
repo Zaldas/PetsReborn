@@ -9,7 +9,7 @@
 
 addon.name    = 'PetsReborn'
 addon.author  = 'Zaldas'
-addon.version = '1.2'
+addon.version = '1.3'
 addon.desc    = 'Comprehensive pet window HUD for all pet jobs'
 addon.link    = 'https://github.com/Zaldas/PetsReborn'
 
