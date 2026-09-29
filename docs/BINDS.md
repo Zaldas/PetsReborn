@@ -162,8 +162,8 @@ Declared on the **section**, shared by all elements within it.
 hp = {
     thresholds = {
         { below = 0.25, color = '#FC8182FF' },  -- red    hp < 25%
-        { below = 0.50, color = '#F3F37CFF' },  -- yellow hp < 50%
-        { below = 0.75, color = '#F8BA80FF' },  -- orange hp < 75%
+        { below = 0.50, color = '#F8BA80FF' },  -- orange hp < 50%
+        { below = 0.75, color = '#F3F37CFF' },  -- yellow hp < 75%
     },
     bar = { bind = { value = 'pet.hppNorm', color = 'threshold' } },
     txt = { color = '#F0FFFFFF', bind = { value = 'pet.hppPct', color = 'threshold', colorValue = 'pet.hppNorm' } },
@@ -199,8 +199,8 @@ hp = {
     bind   = { visible = 'pet.active' },       -- section-level: hides bar+text together
     thresholds = {
         { below = 0.25, color = '#FC8182FF' },
-        { below = 0.50, color = '#F3F37CFF' },
-        { below = 0.75, color = '#F8BA80FF' },
+        { below = 0.50, color = '#F8BA80FF' },
+        { below = 0.75, color = '#F3F37CFF' },
     },
     bar = {
         pos = {0, 0}, zOrder = 1, animSpeed = 0.2,

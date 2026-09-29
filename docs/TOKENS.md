@@ -171,8 +171,8 @@ from the element's (or parent composite's) `thresholds` array:
 thresholds = {
     default = '#RRGGBBAA',              -- optional: used when no entry matches
     { below = 0.25, color = '#FC8182FF' },   -- red
-    { below = 0.50, color = '#F3F37CFF' },   -- yellow
-    { below = 0.75, color = '#F8BA80FF' },   -- orange
+    { below = 0.50, color = '#F8BA80FF' },   -- orange
+    { below = 0.75, color = '#F3F37CFF' },   -- yellow
 },
 ```
 

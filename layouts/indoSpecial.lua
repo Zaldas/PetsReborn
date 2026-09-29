@@ -86,8 +86,8 @@ return {
             pos = {5, 15},
             thresholds = {
                 { below = 0.25, color = '#FC8182FF' },
-                { below = 0.50, color = '#F3F37CFF' },
-                { below = 0.75, color = '#F8BA80FF' },
+                { below = 0.50, color = '#F8BA80FF' },
+                { below = 0.75, color = '#F3F37CFF' },
             },
             bar = {
                 pos       = {0, 0},
@@ -199,8 +199,8 @@ return {
             bind = { visible = 'pet.active' },
             thresholds = {
                 { below = 0.25, color = '#FC8182FF' },  -- red   hp < 25%
-                { below = 0.50, color = '#F3F37CFF' },  -- yellow hp < 50%
-                { below = 0.75, color = '#F8BA80FF' },  -- orange hp < 75%
+                { below = 0.50, color = '#F8BA80FF' },  -- orange hp < 50%
+                { below = 0.75, color = '#F3F37CFF' },  -- yellow hp < 75%
             },
             bar = {
                 pos       = {0, 0},
