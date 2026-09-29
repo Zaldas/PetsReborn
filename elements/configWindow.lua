@@ -378,8 +378,9 @@ function M.draw(prSettings, cb, debugViewType)
                 end
                 uiTheme.helpMarker(
                     'Show the automaton\'s own action gates: the magic cooldowns its head\n' ..
-                    'sets, and the recasts of its attachment abilities.\n' ..
-                    'Neither is in client memory, so both are timed from the automaton\'s\n' ..
+                    'sets, Shield Bash on a Valoredge frame, and the recasts of its\n' ..
+                    'attachment abilities.\n' ..
+                    'None is in client memory, so all are timed from the automaton\'s\n' ..
                     'own actions, and read Ready until one has been seen.'
                 )
 

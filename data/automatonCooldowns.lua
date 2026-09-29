@@ -1,9 +1,11 @@
 -- data/automatonCooldowns.lua
 -- The automaton's internal cooldowns: the magic gates the controller enforces between casts,
--- and the recasts the attachment abilities apply to themselves.
+-- Shield Bash, and the recasts the attachment abilities apply to themselves.
 --
 -- Magic is a two level gate: a global one advanced by any cast, plus a per-category floor.
--- Individual spells carry no recast of their own, so a spell is gated only by its category-- Ev-- Every gate is filtered behind the automaton's 3s decision tick, so a countdown here can
+-- Individual spells carry no recast of their own, so a spell is gated only by its category.
+--
+-- Every gate is filtered behind the automaton's 3s decision tick, so a countdown here can
 -- expire up to 3s before the automaton acts on it.
 --
 -- Trap: the magic gates are set by FRAME while their values come from HEAD. A magic head on a
@@ -25,6 +27,11 @@ M.magicFrames = {
     [M.FRAME_HARLEQUIN]  = true,
     [M.FRAME_STORMWAKER] = true,
 }
+
+-- Valoredge frame only. Fires only while the target is casting, so it can sit at ready for
+-- longer than the recast. Not modelled: Barrier Module's 5s reduction per Earth Maneuver.
+M.SHIELD_BASH_SKILL = 1944
+M.SHIELD_BASH       = 180
 
 -- Keyed by headItemId - 0x2000, the raw byte the 0x0044 packet carries. A full transcription of
 -- setMagicCooldowns, enhance included, so it can be diffed against LSB; M.display decides which

@@ -1,8 +1,8 @@
 -- modules/automatonIcd.lua
 -- Tracks the automaton's internal cooldowns: the magic gates its controller enforces between
--- casts, and the recasts its attachment abilities apply to themselves.
+-- casts, Shield Bash, and the recasts its attachment abilities apply to themselves.
 --
--- Neither is exposed in client memory. The equipped head, frame and attachments arrive in the
+-- None is exposed in client memory. The equipped head, frame and attachments arrive in the
 -- 0x0044 PUP packet, and every gate is timed from the automaton's own actions -- packets.lua
 -- decodes those and calls onCast/onMobSkill.
 --
@@ -33,6 +33,7 @@ local skillCooldown = {}
 for _, entry in pairs(cooldownData.attachmentAbilities) do
     skillCooldown[entry.skillId] = entry.cooldown
 end
+skillCooldown[cooldownData.SHIELD_BASH_SKILL] = cooldownData.SHIELD_BASH
 
 local function gateSlot(id, displayName, key, duration, isAttachment)
     return {
@@ -97,6 +98,11 @@ local function buildSlots()
                                              category, duration)
             end
         end
+    end
+
+    if frame == cooldownData.FRAME_VALOREDGE then
+        slots[#slots + 1] = gateSlot('shieldBash', 'Shield Bash',
+                                     cooldownData.SHIELD_BASH_SKILL, cooldownData.SHIELD_BASH)
     end
 
     if attachments then
@@ -195,7 +201,7 @@ function M.onCast(spellId, now)
     end
 end
 
--- A mob skill the automaton used. Only the attachment abilities carry a recast.
+-- A mob skill the automaton used. Only Shield Bash and the attachment abilities carry a recast.
 function M.onMobSkill(skillId, now)
     if skillCooldown[skillId] == nil then return end
     stamps[skillId] = now

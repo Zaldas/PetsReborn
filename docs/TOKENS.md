@@ -277,7 +277,8 @@ an ability the job has not learned takes no slot, so the ones below it move up. 
 position, not by expecting a fixed ability at a fixed index.
 
 Only the automaton reaches past slot 6: its six abilities are followed by the internal-cooldown
-rows, which are one row per head magic gate and one per equipped attachment ability.
+rows, which are one row per head magic gate, Shield Bash on a Valoredge frame, and one per
+equipped attachment ability.
 
 | Token | Resolves to |
 |-------|------------|
@@ -390,9 +391,11 @@ gate -- it advances on any cast and floors every category below it -- so it alwa
 
 The frame decides whether they exist at all: only Harlequin and Stormwaker set the magic gates,
 and an automaton on any other frame casts nothing whatever head it wears, so no gate row is
-emitted for it. Attachment ability rows are emitted regardless of frame, one per distinct
-ability -- tiered attachments (Strobe, Shock Absorber, Heat Capacitor) share one recast and so
-share one row.
+emitted for it. A Valoredge frame emits a `Shield Bash` row instead (180s). Shield Bash only
+fires while the target is casting, so the row can sit at `'Ready'` well past its recast, and
+Barrier Module's reduction is not applied. Attachment ability rows are emitted regardless of
+frame, one per distinct ability -- tiered attachments (Strobe, Shock Absorber, Heat Capacitor)
+share one recast and so share one row.
 
 Every gate is filtered behind the automaton's 3s decision tick, so a row can read `'Ready'` up
 to 3s before the automaton acts on it.
