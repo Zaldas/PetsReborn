@@ -465,6 +465,9 @@ return {
         -- ── Wivre ─────────────────────────────────────────────────────────────
         [1832] = 60,  -- Barofield       → WEIGHT (12)           fixed 60s [barofield.lua]
 
+        -- ── Apkallu ───────────────────────────────────────────────────────────
+        [1713] = 120, -- Yawn            → SLEEP_I (2)           random 60-120s; max [yawn.lua]
+
         -- ── Rampart (Besieged) ────────────────────────────────────────────────
         [2033] = { [16]=60, [11]=60, [6]=60 },
                       -- Choke Chain: AMNESIA(16) carries the message; BIND(11) and SILENCE(6)
