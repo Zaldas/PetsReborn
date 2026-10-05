@@ -11,6 +11,7 @@ local abilityDurations          = nil;
 local additionalEffectDurations = nil;
 local mobStatusDurations        = nil;
 local exclusionGroups           = nil;
+local negativeEffects           = nil;
 local petAbilities              = nil;
 local wsDurations               = nil;
 local absorbSpells              = nil;
@@ -406,6 +407,19 @@ local function clearExclusionGroup(entityStatuses, statusId)
     end
 end
 
+-- Write a landed status. Clears what the server removes silently on landing: the rest of its
+-- exclusion group and its opposing effect (see negativeEffects).
+-- inferred: the status rides a damage message, so a resist is indistinguishable from a landing;
+-- the opposing effect is left in place.
+local function recordStatus(entityStatuses, statusId, expiry, inferred)
+    clearExclusionGroup(entityStatuses, statusId)
+    local opposingId = not inferred and negativeEffects and negativeEffects[statusId]
+    if opposingId then
+        entityStatuses[opposingId] = nil
+    end
+    entityStatuses[statusId] = expiry
+end
+
 -- Regular buffs/debuffs from a statusOnMes message (the non-mob-self-buff sub-path).
 -- Returns true if the caller should `goto continue_ability` (status unresolved, or the
 -- resolved duration is a known-zero shadow/luopan-based effect with no time component).
@@ -454,9 +468,7 @@ local function applyStatusOn(action, target, ability, now, isPetActor)
             statusTracker.trackedEntities[target.Id][clearId] = nil;
         end
     end
-    clearExclusionGroup(statusTracker.trackedEntities[target.Id], statusId)
-
-    statusTracker.trackedEntities[target.Id][statusId] = now + duration;
+    recordStatus(statusTracker.trackedEntities[target.Id], statusId, now + duration)
     logStatusApplication(action.Type, spell, statusId, message, action.UserId, target.Id, duration, durationSrc);
     if meta and meta.displayId and meta.statusId == statusId then
         displayIdOverrides[target.Id] = displayIdOverrides[target.Id] or {}
@@ -478,9 +490,7 @@ local function applyMobSelfBuff(action, target, ability, now)
         if dur == nil then
             logUnknownMobSelfBuff(action.Type, spell, statusId, action.UserId)
         elseif dur > 0 then
-            clearExclusionGroup(statusTracker.trackedEntities[target.Id], statusId)
-
-            statusTracker.trackedEntities[target.Id][statusId] = now + dur
+            recordStatus(statusTracker.trackedEntities[target.Id], statusId, now + dur)
             logStatusApplication(action.Type, spell, statusId, message, action.UserId, target.Id, dur, 'selfBuffs')
         end
         -- dur == 0: known permanent effect (e.g. bastion_of_twilight), silently skip
@@ -505,12 +515,12 @@ local function applyAbsorbSpell(action, target, ability, now)
     if absorb == nil or ability.Message ~= absorb.message then return false end
     local expiry = now + absorb.duration
     if statusTracker.trackedEntities[target.Id] then
-        statusTracker.trackedEntities[target.Id][absorb.down] = expiry
+        recordStatus(statusTracker.trackedEntities[target.Id], absorb.down, expiry)
     end
     if statusTracker.trackedEntities[action.UserId] == nil then
         statusTracker.trackedEntities[action.UserId] = T{}
     end
-    statusTracker.trackedEntities[action.UserId][absorb.boost] = expiry
+    recordStatus(statusTracker.trackedEntities[action.UserId], absorb.boost, expiry)
     logStatusApplication(4, action.Param, absorb.down, ability.Message, action.UserId, target.Id, absorb.duration, 'absorbSpells')
     return true
 end
@@ -522,7 +532,7 @@ local function applyPhysicalJaDebuff(action, target, ability, now)
     if jaDebuff and ability.Param > 0 then
         local existing = statusTracker.trackedEntities[target.Id][jaDebuff.statusId]
         if not existing or existing <= now then
-            statusTracker.trackedEntities[target.Id][jaDebuff.statusId] = now + jaDebuff.duration
+            recordStatus(statusTracker.trackedEntities[target.Id], jaDebuff.statusId, now + jaDebuff.duration, true)
             logStatusApplication(3, spell, jaDebuff.statusId, message, action.UserId, target.Id, jaDebuff.duration, 'physicalJaDebuffs')
         end
     end
@@ -535,7 +545,7 @@ local function applyPhysicalJaDebuff(action, target, ability, now)
         for _, statusId in ipairs(statusIds) do
             local existing = statusTracker.trackedEntities[target.Id][statusId]
             if not existing or existing <= now then
-                statusTracker.trackedEntities[target.Id][statusId] = now + ws.duration
+                recordStatus(statusTracker.trackedEntities[target.Id], statusId, now + ws.duration, true)
                 logStatusApplication(3, spell, statusId, message, action.UserId, target.Id, ws.duration, 'wsDurations')
             end
         end
@@ -552,7 +562,7 @@ local function applyBloodPact(action, target, ability, now)
         -- Apply all statuses when the message matches; always overwrite (server refreshes on recast).
         if pactDebuff.messages[ability.Message] then
             for sid, dur in pairs(pactDebuff.statuses) do
-                statusTracker.trackedEntities[target.Id][sid] = now + dur
+                recordStatus(statusTracker.trackedEntities[target.Id], sid, now + dur)
                 logStatusApplication(13, action.Param, sid, ability.Message, action.UserId, target.Id, dur, 'bloodPactDebuffs')
             end
         end
@@ -560,7 +570,7 @@ local function applyBloodPact(action, target, ability, now)
         -- Physical hit path: only when damage > 0 and no active timer exists.
         local existing = statusTracker.trackedEntities[target.Id][pactDebuff.statusId]
         if not existing or existing <= now then
-            statusTracker.trackedEntities[target.Id][pactDebuff.statusId] = now + pactDebuff.duration
+            recordStatus(statusTracker.trackedEntities[target.Id], pactDebuff.statusId, now + pactDebuff.duration, true)
             logStatusApplication(13, action.Param, pactDebuff.statusId, ability.Message, action.UserId, target.Id, pactDebuff.duration, 'bloodPactDebuffs')
         end
     end
@@ -584,7 +594,7 @@ local function applySilentMobDebuff(action, target, ability, now)
         for _, record in ipairs(records) do
             local existing = statusTracker.trackedEntities[target.Id][record.statusId]
             if not existing or existing <= now then
-                statusTracker.trackedEntities[target.Id][record.statusId] = now + record.duration
+                recordStatus(statusTracker.trackedEntities[target.Id], record.statusId, now + record.duration, true)
                 logStatusApplication(action.Type, spell, record.statusId, ability.Message, action.UserId, target.Id, record.duration, silentSrc)
             end
         end
@@ -601,7 +611,7 @@ local function applyAdditionalEffect(action, target, ability, now)
     if aeStatusId and aeStatusId ~= 0 then
         if statusOnMes[aeMessage] then
             local aeDuration = additionalEffectDurations[aeStatusId] or FALLBACK_DURATION_S
-            statusTracker.trackedEntities[target.Id][aeStatusId] = now + aeDuration
+            recordStatus(statusTracker.trackedEntities[target.Id], aeStatusId, now + aeDuration)
         elseif statusOffMes[aeMessage] then
             if statusTracker.trackedEntities[target.Id] then
                 statusTracker.trackedEntities[target.Id][aeStatusId] = nil
@@ -1010,6 +1020,7 @@ statusTracker.init = function(opts)
     wsDurations               = dofile(opts.addonPath .. 'libs/status/data/wsDurations.lua');
     absorbSpells              = dofile(opts.addonPath .. 'libs/status/data/absorbSpells.lua');
     exclusionGroups           = dofile(opts.addonPath .. 'libs/status/data/exclusionGroups.lua');
+    negativeEffects           = dofile(opts.addonPath .. 'libs/status/data/negativeEffects.lua');
     mobSkillSilentDebuffs     = dofile(opts.addonPath .. 'libs/status/data/mobSkillSilentDebuffs.lua');
 
     if opts.enableAuditLog ~= false then
