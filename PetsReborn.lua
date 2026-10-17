@@ -86,7 +86,8 @@ local function getMenuName()
     local subValue   = ashita.memory.read_uint32(subPointer)
     if subValue == 0 then return '' end
     local menuHeader = ashita.memory.read_uint32(subValue + 4)
-    local menuName   = ashita.memory.read_string(menuHeader + 0x46, 16)
+    if menuHeader == 0 then return '' end
+    local menuName  = ashita.memory.read_string(menuHeader + 0x46, 16)
     -- selene: allow(bad_string_escape)
     return string.gsub(tostring(menuName), '\x00', '')
 end
