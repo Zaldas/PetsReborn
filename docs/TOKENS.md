@@ -270,13 +270,13 @@ Available when `target.active == true` (pet has an active target that is not its
 
 ### Virtual Recast Tokens
 
-Routed from the active type's specific recast array. Slots N = 1–23.
+Routed from the active type's specific recast array. Slots N = 1–24.
 
 Slot order is the declaration order in `data/petAbilities.lua`, compacted by the level filter --
 an ability the job has not learned takes no slot, so the ones below it move up. Bind by slot
 position, not by expecting a fixed ability at a fixed index.
 
-Only the automaton reaches past slot 6: its six abilities are followed by the internal-cooldown
+Only the automaton reaches past slot 6: its seven abilities are followed by the internal-cooldown
 rows, which are one row per head magic gate, Shield Bash on a Valoredge frame, and one per
 equipped attachment ability.
 
@@ -367,13 +367,13 @@ Spirit Link, Steady Wing. Wyvern is main-job DRG only -- `/DRG` grants no pet.
 
 ### Automaton Tokens (PUP)
 
-Available when `pet.type == 'automaton'`. Six ability slots at level 40+, in order: Activate,
-Repair, Deploy, Deactivate, Retrieve, Deus Ex Automata -- followed by the internal cooldown
-rows below. No automaton row is a charge ability.
+Available when `pet.type == 'automaton'`. Seven ability slots at level 50+, in order: Activate,
+Repair, Deploy, Deactivate, Retrieve, Deus Ex Automata, Maintenance -- followed by the internal
+cooldown rows below. No automaton row is a charge ability.
 
 #### Internal cooldown rows
 
-Appended after the six ability slots when `showAutomatonIcd` is on, and hidden while no
+Appended after the ability slots when `showAutomatonIcd` is on, and hidden while no
 automaton is out. They use the same `recast[N]` tokens and render exactly like an ability
 recast row: `M:SS` while counting, `'Ready'` when clear.
 
