@@ -436,6 +436,9 @@ return {
         [1710] = 30,  -- Deafening Tantara → SILENCE (6)         fixed 30s [deafening_tantara.lua] (Tracker Imp)
 
         -- ── Qiqirn ────────────────────────────────────────────────────────────
+        [1725] = 60,  -- Kibosh          → AMNESIA (16)          fixed 60s [kibosh.lua]
+        [1727] = 150, -- Sandspray       → BLINDNESS (5)         fixed 150s [sandspray.lua]
+        [1728] = 10,  -- Faze            → TERROR (28)           fixed 10s [faze.lua]
         [1730] = { [149]=120, [167]=120 },
                       -- Deadeye: DEFENSE_DOWN(149)=120s, MAGIC_DEF_DOWN(167)=120s
 

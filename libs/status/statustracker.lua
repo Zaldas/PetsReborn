@@ -58,6 +58,7 @@ local deathMes = {[6]=true,[20]=true,[97]=true,[113]=true,[406]=true,[605]=true,
 -- so a mob's shadows always read as plain Copy Image.
 local SHADOW_COPY_IMAGE_IDS = {[66]=true,[444]=true,[445]=true,[446]=true}
 local SHADOW_SINGLE_HIT_MES = {[1]=true,[67]=true,[352]=true,[353]=true,[576]=true,[577]=true}
+local SHADOW_ABSORB_MES = 31
 
 local spellDamageMes = {[2]=true,[252]=true,[264]=true,[265]=true}
 -- Bio/Dia outcomes that deal no damage — nullified (85) or absorbed (7). The status still lands.
@@ -582,7 +583,8 @@ end
 -- Mob skill silent debuffs: mob skills that apply status via mobStatusEffectMove()
 -- but never call skill:setMsg() — damage message fires, status lands silently.
 -- Pet abilities of the same shape come from petAbilities.hitData.
--- Only applied when ability.Param (damage) > 0 and no active timer exists.
+-- Only applied when ability.Param (damage) > 0 and no active timer exists. A shadow absorb
+-- (msg 31) carries the shadow count in Param, not damage.
 local function applySilentMobDebuff(action, target, ability, now)
     local spell = action.Param
     local silentDebuff = mobSkillSilentDebuffs[spell]
@@ -591,7 +593,7 @@ local function applySilentMobDebuff(action, target, ability, now)
         silentDebuff = petAbilities.hitData[spell]
         silentSrc = 'petAbilities'
     end
-    if silentDebuff and ability.Param > 0 then
+    if silentDebuff and ability.Param > 0 and ability.Message ~= SHADOW_ABSORB_MES then
         -- Multi-status skills hold a list of records; single-status ones are the record itself.
         local records = silentDebuff[1] and silentDebuff or { silentDebuff }
         for _, record in ipairs(records) do
@@ -737,6 +739,7 @@ statusTracker.HandleActionPacket = function(e)
                     and action.UserId ~= target.Id
                     and spell
                     and ability.Param > 0
+                    and message ~= SHADOW_ABSORB_MES
                     and not statusOnMes[message]
                     and message ~= 0 then
                 local debuffs = mobStatusDurations and mobStatusDurations.skillDebuffs

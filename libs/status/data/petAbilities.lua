@@ -3,6 +3,7 @@
 --
 --   durations  ability ID → seconds.  The status ID rides in ability.Param, so only the
 --              duration is needed here.
+--              0 marks an ability whose status message applies nothing (Eraser).
 --
 --   hitData    ability ID → { statusId, duration }.  Applied server-side via
 --              mobStatusEffectMove() with no result message — the 0x028 action carries only
@@ -27,6 +28,7 @@ return {
         [1946] = 180,  -- Shock Absorber  → Stoneskin (37),      180s  [shock_absorber.lua]
         [1947] = 12,   -- Flashbulb       → Flash (156),          12s  [flashbulb.lua]
         [1948] = 30,   -- Mana Converter  → Refresh (43),         30s  [mana_converter.lua]
+        [2021] = 0,    -- Eraser          → removes statuses; msg 101's Param is not a status ID  [eraser.lua]
         [2031] = 60,   -- Reactive Shield → Blaze Spikes (34),    60s  [reactive_shield.lua]
         [2132] = 300,  -- Replicator      → Copy Image (66),     300s  [replicator.lua]
         [2939] = 45,   -- Mighty Strikes  → Mighty Strikes (44),  45s  [mighty_strikes_automaton.lua]
