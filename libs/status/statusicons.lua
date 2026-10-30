@@ -80,7 +80,7 @@ local function load_status_icon_from_theme(status_id, theme)
         icon_path = ('%s\\libs\\status\\icons\\%s\\%d'):append(ext):fmt(libAddonPath, theme, status_id);
         local handle = io.open(icon_path, 'r');
         if (handle ~= nil) then
-            handle.close();
+            handle:close();
         else
             icon_path = nil;
         end
