@@ -99,17 +99,14 @@ local spellMeta = {
     [79]  = { statusId = 13, displayId = 819 },  -- Slow II     → custom icon (819)
 }
 
--- An override is live only while the status still holds the expiry it was recorded with: any
--- other write path or a removal changes that expiry, which invalidates it.
--- [serverId][realStatusId] = { id = displayStatusId (814-1022, see libs/status/icons/README.md), expiry }
+-- Owned by writeStatus/removeStatus: every write replaces the override and every explicit
+-- removal clears it, so it always belongs to the latest write.
+-- [serverId][realStatusId] = displayStatusId (814-1022 range, see libs/status/icons/README.md)
 local displayIdOverrides = {}
 
--- expiry: the status's current tracked expiry
-local function getDisplayId(serverId, statusId, expiry)
+local function getDisplayId(serverId, statusId)
     local overrides = displayIdOverrides[serverId]
-    local ov = overrides and overrides[statusId]
-    if ov and ov.expiry == expiry then return ov.id end
-    return statusId
+    return (overrides and overrides[statusId]) or statusId
 end
 
 -- Physical JA debuffs (type 3): weapon-based player abilities that apply status effects
@@ -346,6 +343,35 @@ local statusTracker = {
     relevantTargets = T{}; -- targets by targetIndex that are relevant to the player
 };
 
+-- Every status write and explicit removal must go through these so the tier icon always
+-- belongs to the latest write; a direct trackedEntities write leaves a stale icon.
+-- displayId: tier icon for this write, nil for none
+local function writeStatus(serverId, statusId, expiry, displayId)
+    local statuses = statusTracker.trackedEntities[serverId]
+    if statuses == nil then
+        statuses = T{}
+        statusTracker.trackedEntities[serverId] = statuses
+    end
+    statuses[statusId] = expiry
+    local overrides = displayIdOverrides[serverId]
+    if displayId then
+        if overrides == nil then
+            overrides = {}
+            displayIdOverrides[serverId] = overrides
+        end
+        overrides[statusId] = displayId
+    elseif overrides then
+        overrides[statusId] = nil
+    end
+end
+
+local function removeStatus(serverId, statusId)
+    local statuses = statusTracker.trackedEntities[serverId]
+    if statuses then statuses[statusId] = nil end
+    local overrides = displayIdOverrides[serverId]
+    if overrides then overrides[statusId] = nil end
+end
+
 -- if a mob updates its claimid to be us or a party member add it to the list
 statusTracker.HandleMobUpdatePacket = function(e)
     local mobUpdate = helpers.ParseMobUpdatePacket(e);
@@ -390,29 +416,20 @@ local function applyBioDia(action, target, ability, now)
         if expiry == nil or expiry <= now then active = nil end
     end
     if not active or active.tier < bioDia.tier then
-        statusTracker.trackedEntities[target.Id][bioDia.opposing] = nil
-        statusTracker.trackedEntities[target.Id][bioDia.statusId] = now + bioDia.dur
+        removeStatus(target.Id, bioDia.opposing)
+        writeStatus(target.Id, bioDia.statusId, now + bioDia.dur, bioDia.displayId)
         bioDiaTiers[target.Id] = { statusId = bioDia.statusId, tier = bioDia.tier }
-        -- Set or clear display icon override based on tier
-        local ov = displayIdOverrides[target.Id]
-        if bioDia.displayId then
-            displayIdOverrides[target.Id] = ov or {}
-            displayIdOverrides[target.Id][bioDia.statusId] = { id = bioDia.displayId, expiry = now + bioDia.dur }
-            displayIdOverrides[target.Id][bioDia.opposing]  = nil
-        else
-            if ov then ov[bioDia.statusId] = nil; ov[bioDia.opposing] = nil end
-        end
     end
 end
 
 -- Remove any other member of statusId's exclusion group. The server drops the loser silently
 -- (no wear-off packet), so without this the previous member lingers until its own timer runs out.
-local function clearExclusionGroup(entityStatuses, statusId)
+local function clearExclusionGroup(serverId, statusId)
     local group = exclusionGroups and exclusionGroups.groupOf[statusId]
     if group == nil then return end
     for _, otherId in ipairs(exclusionGroups.members[group]) do
         if otherId ~= statusId then
-            entityStatuses[otherId] = nil
+            removeStatus(serverId, otherId)
         end
     end
 end
@@ -421,13 +438,14 @@ end
 -- exclusion group and its opposing effect (see negativeEffects).
 -- inferred: the status rides a damage message, so a resist is indistinguishable from a landing;
 -- the opposing effect is left in place.
-local function recordStatus(entityStatuses, statusId, expiry, inferred)
-    clearExclusionGroup(entityStatuses, statusId)
+-- displayId: tier icon for this write, nil for none
+local function recordStatus(serverId, statusId, expiry, inferred, displayId)
+    clearExclusionGroup(serverId, statusId)
     local opposingId = not inferred and negativeEffects and negativeEffects[statusId]
     if opposingId then
-        entityStatuses[opposingId] = nil
+        removeStatus(serverId, opposingId)
     end
-    entityStatuses[statusId] = expiry
+    writeStatus(serverId, statusId, expiry, displayId)
 end
 
 -- Regular buffs/debuffs from a statusOnMes message (the non-mob-self-buff sub-path).
@@ -436,9 +454,14 @@ end
 local function applyStatusOn(action, target, ability, now, isPetActor)
     local spell = action.Param
     local message = ability.Message
-    -- Regular buffs/debuffs (including mob skills targeting the pet)
-    local statusId = ability.Param or (action.Type == 4 and statusTable.GetStatusIdBySpellId(spell) or nil);
-    if (statusId == nil) then
+    -- Regular buffs/debuffs (including mob skills targeting the pet). ability.Param is
+    -- bit-unpacked so it defaults to 0 (never nil); treat 0 as "no status ID" and fall back to
+    -- the spell table for type-4 casts.
+    local statusId = ability.Param
+    if statusId == 0 and action.Type == 4 then
+        statusId = statusTable.GetStatusIdBySpellId(spell)
+    end
+    if statusId == nil or statusId == 0 then
         return true
     end
     -- Spells only: mob skills and abilities reuse the same IDs
@@ -476,17 +499,12 @@ local function applyStatusOn(action, target, ability, now, isPetActor)
     if duration == 0 then return true end  -- shadow/luopan-based effects have no time component
     if meta and meta.clears then
         for _, clearId in ipairs(meta.clears) do
-            statusTracker.trackedEntities[target.Id][clearId] = nil;
+            removeStatus(target.Id, clearId)
         end
     end
-    recordStatus(statusTracker.trackedEntities[target.Id], statusId, now + duration)
+    local displayId = meta and meta.statusId == statusId and meta.displayId or nil
+    recordStatus(target.Id, statusId, now + duration, false, displayId)
     logStatusApplication(action.Type, spell, statusId, message, action.UserId, target.Id, duration, durationSrc);
-    if meta and meta.displayId and meta.statusId == statusId then
-        displayIdOverrides[target.Id] = displayIdOverrides[target.Id] or {}
-        displayIdOverrides[target.Id][statusId] = { id = meta.displayId, expiry = now + duration }
-    elseif displayIdOverrides[target.Id] then
-        displayIdOverrides[target.Id][statusId] = nil  -- base spell: clear any high-tier override
-    end
     return false
 end
 
@@ -501,7 +519,7 @@ local function applyMobSelfBuff(action, target, ability, now)
         if dur == nil then
             logUnknownMobSelfBuff(action.Type, spell, statusId, action.UserId)
         elseif dur > 0 then
-            recordStatus(statusTracker.trackedEntities[target.Id], statusId, now + dur)
+            recordStatus(target.Id, statusId, now + dur)
             logStatusApplication(action.Type, spell, statusId, message, action.UserId, target.Id, dur, 'selfBuffs')
         end
         -- dur == 0: known permanent effect (e.g. bastion_of_twilight), silently skip
@@ -512,8 +530,8 @@ end
 -- ability.Param carries the status effect ID that was removed.
 local function applyStatusOff(action, target, ability, now)
     local statusId = ability.Param
-    if statusId and statusId ~= 0 and statusTracker.trackedEntities[target.Id] then
-        statusTracker.trackedEntities[target.Id][statusId] = nil
+    if statusId and statusId ~= 0 then
+        removeStatus(target.Id, statusId)
     end
 end
 
@@ -526,12 +544,9 @@ local function applyAbsorbSpell(action, target, ability, now)
     if absorb == nil or ability.Message ~= absorb.message then return false end
     local expiry = now + absorb.duration
     if statusTracker.trackedEntities[target.Id] then
-        recordStatus(statusTracker.trackedEntities[target.Id], absorb.down, expiry)
+        recordStatus(target.Id, absorb.down, expiry)
     end
-    if statusTracker.trackedEntities[action.UserId] == nil then
-        statusTracker.trackedEntities[action.UserId] = T{}
-    end
-    recordStatus(statusTracker.trackedEntities[action.UserId], absorb.boost, expiry)
+    recordStatus(action.UserId, absorb.boost, expiry)
     logStatusApplication(4, action.Param, absorb.down, ability.Message, action.UserId, target.Id, absorb.duration, 'absorbSpells')
     return true
 end
@@ -543,7 +558,7 @@ local function applyPhysicalJaDebuff(action, target, ability, now)
     if jaDebuff and ability.Param > 0 then
         local existing = statusTracker.trackedEntities[target.Id][jaDebuff.statusId]
         if not existing or existing <= now then
-            recordStatus(statusTracker.trackedEntities[target.Id], jaDebuff.statusId, now + jaDebuff.duration, true)
+            recordStatus(target.Id, jaDebuff.statusId, now + jaDebuff.duration, true)
             logStatusApplication(3, spell, jaDebuff.statusId, message, action.UserId, target.Id, jaDebuff.duration, 'physicalJaDebuffs')
         end
     end
@@ -556,7 +571,7 @@ local function applyPhysicalJaDebuff(action, target, ability, now)
         for _, statusId in ipairs(statusIds) do
             local existing = statusTracker.trackedEntities[target.Id][statusId]
             if not existing or existing <= now then
-                recordStatus(statusTracker.trackedEntities[target.Id], statusId, now + ws.duration, true)
+                recordStatus(target.Id, statusId, now + ws.duration, true)
                 logStatusApplication(3, spell, statusId, message, action.UserId, target.Id, ws.duration, 'wsDurations')
             end
         end
@@ -573,7 +588,7 @@ local function applyBloodPact(action, target, ability, now)
         -- Apply all statuses when the message matches; always overwrite (server refreshes on recast).
         if pactDebuff.messages[ability.Message] then
             for sid, dur in pairs(pactDebuff.statuses) do
-                recordStatus(statusTracker.trackedEntities[target.Id], sid, now + dur)
+                recordStatus(target.Id, sid, now + dur)
                 logStatusApplication(13, action.Param, sid, ability.Message, action.UserId, target.Id, dur, 'bloodPactDebuffs')
             end
         end
@@ -581,7 +596,7 @@ local function applyBloodPact(action, target, ability, now)
         -- Physical hit path: only when damage > 0 and no active timer exists.
         local existing = statusTracker.trackedEntities[target.Id][pactDebuff.statusId]
         if not existing or existing <= now then
-            recordStatus(statusTracker.trackedEntities[target.Id], pactDebuff.statusId, now + pactDebuff.duration, true)
+            recordStatus(target.Id, pactDebuff.statusId, now + pactDebuff.duration, true)
             logStatusApplication(13, action.Param, pactDebuff.statusId, ability.Message, action.UserId, target.Id, pactDebuff.duration, 'bloodPactDebuffs')
         end
     end
@@ -606,7 +621,7 @@ local function applySilentMobDebuff(action, target, ability, now)
         for _, record in ipairs(records) do
             local existing = statusTracker.trackedEntities[target.Id][record.statusId]
             if not existing or existing <= now then
-                recordStatus(statusTracker.trackedEntities[target.Id], record.statusId, now + record.duration, true)
+                recordStatus(target.Id, record.statusId, now + record.duration, true)
                 logStatusApplication(action.Type, spell, record.statusId, ability.Message, action.UserId, target.Id, record.duration, silentSrc)
             end
         end
@@ -623,11 +638,9 @@ local function applyAdditionalEffect(action, target, ability, now)
     if aeStatusId and aeStatusId ~= 0 then
         if statusOnMes[aeMessage] then
             local aeDuration = additionalEffectDurations[aeStatusId] or FALLBACK_DURATION_S
-            recordStatus(statusTracker.trackedEntities[target.Id], aeStatusId, now + aeDuration)
+            recordStatus(target.Id, aeStatusId, now + aeDuration)
         elseif statusOffMes[aeMessage] then
-            if statusTracker.trackedEntities[target.Id] then
-                statusTracker.trackedEntities[target.Id][aeStatusId] = nil
-            end
+            removeStatus(target.Id, aeStatusId)
         end
     end
 end
@@ -638,7 +651,7 @@ local function noteShadowProof(targetId, now)
     if entity == nil then return end
     for statusId in pairs(SHADOW_COPY_IMAGE_IDS) do
         if entity[statusId] ~= nil and entity[statusId] > now then
-            entity[statusId] = nil
+            removeStatus(targetId, statusId)
         end
     end
 end
@@ -847,31 +860,21 @@ statusTracker.HandleClearMessage = function(e)
     elseif parsedPacket.message == WAKEUP_MES then
         -- Mob woke up from damage. param is not a status ID here; clear all sleep-family IDs.
         -- Sleep II is tracked under ID 19 (spellMeta buffId override), so clear both.
-        local entity = statusTracker.trackedEntities[parsedPacket.target]
-        if entity then
-            entity[2]   = nil;  -- Sleep I
-            entity[19]  = nil;  -- Sleep II (tracked as 19 via spellMeta buffId)
-            entity[193] = nil;  -- Lullaby
-        end
+        removeStatus(parsedPacket.target, 2)    -- Sleep I
+        removeStatus(parsedPacket.target, 19)   -- Sleep II (tracked as 19 via spellMeta buffId)
+        removeStatus(parsedPacket.target, 193)  -- Lullaby
     elseif statusOffMes[parsedPacket.message] then
-        if statusTracker.trackedEntities[parsedPacket.target] == nil then
-            return
-        end
-
         -- Clear the buffid that just wore off.
         -- Sleep family (IDs 2, 19, 193) shares one wear-off message; clear all three
         -- so a Sleep I icon left from an earlier cast doesn't linger after Sleep II wears.
         if (parsedPacket.param ~= nil) then
             local p = parsedPacket.param;
             if p == 2 or p == 19 or p == 193 then
-                statusTracker.trackedEntities[parsedPacket.target][2]   = nil;
-                statusTracker.trackedEntities[parsedPacket.target][19]  = nil;
-                statusTracker.trackedEntities[parsedPacket.target][193] = nil;
+                removeStatus(parsedPacket.target, 2)
+                removeStatus(parsedPacket.target, 19)
+                removeStatus(parsedPacket.target, 193)
             else
-                statusTracker.trackedEntities[parsedPacket.target][p] = nil;
-                if displayIdOverrides[parsedPacket.target] then
-                    displayIdOverrides[parsedPacket.target][p] = nil
-                end
+                removeStatus(parsedPacket.target, p)
                 if p == 134 or p == 135 then
                     local active = bioDiaTiers[parsedPacket.target]
                     if active and active.statusId == p then
@@ -911,7 +914,7 @@ statusTracker.GetStatusEffects = function(serverId)
     local now = os.time();
     for k,v in pairs(statusTracker.trackedEntities[serverId]) do
         if (v ~= 0 and v > now) then
-            table.insert(returnTable, getDisplayId(serverId, k, v));
+            table.insert(returnTable, getDisplayId(serverId, k));
         else
             statusTracker.trackedEntities[serverId][k] = nil; -- Clear this entry if it's not valid
         end
@@ -940,7 +943,7 @@ statusTracker.GetStatusTimes = function(serverId)
     local now = os.time()
     for k, v in pairs(statusTracker.trackedEntities[serverId]) do
         if (v ~= 0 and v > now) then
-            returnTable[getDisplayId(serverId, k, v)] = v  -- absolute expiry timestamp
+            returnTable[getDisplayId(serverId, k)] = v  -- absolute expiry timestamp
         end
     end
     return returnTable
@@ -968,6 +971,8 @@ local function sweepExpiredEntities()
         end
         if not anyActive then
             statusTracker.trackedEntities[sid] = nil;
+            displayIdOverrides[sid] = nil;
+            bioDiaTiers[sid] = nil;
         end
     end
 end
@@ -1012,10 +1017,7 @@ statusTracker.RestoreState = function()
         if type(buffs) == 'table' then
             for statusId, expiry in pairs(buffs) do
                 if type(expiry) == 'number' and expiry > now then
-                    if statusTracker.trackedEntities[sid] == nil then
-                        statusTracker.trackedEntities[sid] = T{}
-                    end
-                    statusTracker.trackedEntities[sid][statusId] = expiry
+                    writeStatus(sid, statusId, expiry, nil)
                 end
             end
         end
