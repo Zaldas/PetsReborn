@@ -5,8 +5,9 @@
 -- Magic is a two level gate: a global one advanced by any cast, plus a per-category floor.
 -- Individual spells carry no recast of their own, so a spell is gated only by its category.
 --
--- Every gate is filtered behind the automaton's 3s decision tick, so a countdown here can
--- expire up to 3s before the automaton acts on it.
+-- Every gate is filtered behind the automaton's decision tick, so a countdown here can expire up
+-- to one tick before the automaton acts on it. The tick is 3.2s, not LSB's declared 3s: a 3s
+-- cooldown evaluated on the 400ms server tick resolves to 8 ticks.
 --
 -- Trap: the magic gates are set by FRAME while their values come from HEAD. A magic head on a
 -- Sharpshot or Valoredge frame never calls setMagicCooldowns, and the automaton then casts
@@ -36,19 +37,22 @@ M.SHIELD_BASH       = 180
 -- Keyed by headItemId - 0x2000, the raw byte the 0x0044 packet carries. A full transcription of
 -- setMagicCooldowns, enhance included, so it can be diffed against LSB; M.display decides which
 -- of these become rows.
+--
+-- An enfeeble equal to magic was floored by the global gate in measurement: its own value is an
+-- upper bound. Stormwaker heal is an upper bound too, <= 12.59 + 3 with Damage Gauge.
 M.categories = {
     -- Harlequin
-    [1] = { magic = 12.8, enfeeble = 10, heal = 12 },
+    [1] = { magic = 12.8, enfeeble = 12.8, heal = 12 },
     -- Valoredge
     [2] = { magic = 12.8, heal = 20 },
     -- Sharpshot
     [3] = { magic = 12.8, enfeeble = 12, heal = 20 },
     -- Stormwaker
-    [4] = { magic = 12.8, enfeeble = 10, heal = 12.8, elemental = 25, enhance = 25 },
+    [4] = { magic = 12.8, enfeeble = 12.8, heal = 15.6, elemental = 25, enhance = 25 },
     -- Soulsoother
-    [5] = { magic = 6.4, enfeeble = 5, heal = 10, status = 10, enhance = 15 },
+    [5] = { magic = 6.4, enfeeble = 6.4, heal = 10, status = 10, enhance = 15 },
     -- Spiritreaver
-    [6] = { magic = 12.8, enfeeble = 10, elemental = 35, enhance = 35 },
+    [6] = { magic = 12.8, enfeeble = 12.8, elemental = 35, enhance = 35 },
 }
 
 M.CATEGORY_LABELS = {
@@ -152,6 +156,13 @@ M.spellCategory = {
 }
 
 M.ATTACHMENT_ITEM_BASE = 0x2100
+
+-- Attachment item id -> seconds its AUTO_HEALING_DELAY takes off the heal gate, flat at every
+-- maneuver count. The server sums the mod, so fitted tiers stack.
+M.healDelay = {
+    [8643] = 3, -- Damage Gauge
+    [8655] = 3, -- Damage Gauge II
+}
 
 -- Attachment array length in the 0x0044 packet, and so the most attachment rows an automaton
 -- can produce.

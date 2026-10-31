@@ -91,8 +91,21 @@ local function buildSlots()
     local categories = cooldownData.magicFrames[frame] and cooldownData.categories[head]
     local order      = categories and cooldownData.display[head]
     if order then
+        local healDelay = 0
+        if attachments then
+            for _, value in ipairs(attachments) do
+                if value ~= 0 then
+                    healDelay = healDelay
+                        + (cooldownData.healDelay[cooldownData.ATTACHMENT_ITEM_BASE + value] or 0)
+                end
+            end
+        end
+
         for _, category in ipairs(order) do
             local duration = categories[category]
+            if duration and category == 'heal' then
+                duration = duration - healDelay
+            end
             if duration then
                 slots[#slots + 1] = gateSlot(category, cooldownData.CATEGORY_LABELS[category],
                                              category, duration)
