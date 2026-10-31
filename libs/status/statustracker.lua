@@ -93,17 +93,23 @@ local spellMeta = {
     [274] = { buffId = 19, clears = {2, 193} },  -- Sleepga II  → SLEEP_II (19), clears Sleep I + Lullaby
     [364] = { buffId = 19, clears = {2, 193} },  -- Sleepga III → SLEEP_II (19), clears Sleep I + Lullaby
     [221] = { statusId = 3, displayId = 816 },   -- Poison II   → custom icon (816)
+    [226] = { statusId = 3, displayId = 816 },   -- Poisonga II → custom icon (816)
     [80]  = { statusId = 4, displayId = 817 },   -- Paralyze II → custom icon (817)
     [276] = { statusId = 5, displayId = 818 },   -- Blind II    → custom icon (818)
     [79]  = { statusId = 13, displayId = 819 },  -- Slow II     → custom icon (819)
 }
 
--- [serverId][realStatusId] = displayStatusId (814-1022 range, see libs/status/icons/README.md)
+-- An override is live only while the status still holds the expiry it was recorded with: any
+-- other write path or a removal changes that expiry, which invalidates it.
+-- [serverId][realStatusId] = { id = displayStatusId (814-1022, see libs/status/icons/README.md), expiry }
 local displayIdOverrides = {}
 
-local function getDisplayId(serverId, statusId)
+-- expiry: the status's current tracked expiry
+local function getDisplayId(serverId, statusId, expiry)
     local overrides = displayIdOverrides[serverId]
-    return (overrides and overrides[statusId]) or statusId
+    local ov = overrides and overrides[statusId]
+    if ov and ov.expiry == expiry then return ov.id end
+    return statusId
 end
 
 -- Physical JA debuffs (type 3): weapon-based player abilities that apply status effects
@@ -391,7 +397,7 @@ local function applyBioDia(action, target, ability, now)
         local ov = displayIdOverrides[target.Id]
         if bioDia.displayId then
             displayIdOverrides[target.Id] = ov or {}
-            displayIdOverrides[target.Id][bioDia.statusId] = bioDia.displayId
+            displayIdOverrides[target.Id][bioDia.statusId] = { id = bioDia.displayId, expiry = now + bioDia.dur }
             displayIdOverrides[target.Id][bioDia.opposing]  = nil
         else
             if ov then ov[bioDia.statusId] = nil; ov[bioDia.opposing] = nil end
@@ -435,7 +441,8 @@ local function applyStatusOn(action, target, ability, now, isPetActor)
     if (statusId == nil) then
         return true
     end
-    local meta = spellMeta[spell]
+    -- Spells only: mob skills and abilities reuse the same IDs
+    local meta = action.Type == 4 and spellMeta[spell] or nil
     if meta and meta.buffId then statusId = meta.buffId end
 
     local durationSrc
@@ -476,7 +483,7 @@ local function applyStatusOn(action, target, ability, now, isPetActor)
     logStatusApplication(action.Type, spell, statusId, message, action.UserId, target.Id, duration, durationSrc);
     if meta and meta.displayId and meta.statusId == statusId then
         displayIdOverrides[target.Id] = displayIdOverrides[target.Id] or {}
-        displayIdOverrides[target.Id][statusId] = meta.displayId
+        displayIdOverrides[target.Id][statusId] = { id = meta.displayId, expiry = now + duration }
     elseif displayIdOverrides[target.Id] then
         displayIdOverrides[target.Id][statusId] = nil  -- base spell: clear any high-tier override
     end
@@ -904,7 +911,7 @@ statusTracker.GetStatusEffects = function(serverId)
     local now = os.time();
     for k,v in pairs(statusTracker.trackedEntities[serverId]) do
         if (v ~= 0 and v > now) then
-            table.insert(returnTable, getDisplayId(serverId, k));
+            table.insert(returnTable, getDisplayId(serverId, k, v));
         else
             statusTracker.trackedEntities[serverId][k] = nil; -- Clear this entry if it's not valid
         end
@@ -912,6 +919,7 @@ statusTracker.GetStatusEffects = function(serverId)
     -- Remove the entity shell when all its debuffs have expired to prevent unbounded growth
     if next(statusTracker.trackedEntities[serverId]) == nil then
         statusTracker.trackedEntities[serverId] = nil;
+        displayIdOverrides[serverId] = nil;
     end
     return returnTable;
 end
@@ -932,7 +940,7 @@ statusTracker.GetStatusTimes = function(serverId)
     local now = os.time()
     for k, v in pairs(statusTracker.trackedEntities[serverId]) do
         if (v ~= 0 and v > now) then
-            returnTable[getDisplayId(serverId, k)] = v  -- absolute expiry timestamp
+            returnTable[getDisplayId(serverId, k, v)] = v  -- absolute expiry timestamp
         end
     end
     return returnTable
