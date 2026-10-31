@@ -16,9 +16,8 @@
 --
 -- Applied only when ability.Param (damage) > 0 and no active timer exists. May produce false
 -- timers when the status resisted independently of the damage -- mobStatusEffectMove rolls
--- resist server-side where the addon cannot observe it. In VanaVista a false timer stays
--- invisible: the icon list is read from memory and a timer never creates an icon. PetsReborn
--- draws the pet's icons from this tracker, so there a false timer is a visible icon.
+-- resist server-side where the addon cannot observe it. The pet's icons are drawn from this
+-- tracker, so a false timer is a visible icon.
 --
 -- Scope: every mob skill observed in play (unknownDurations.log, 2026-07-08 onward) whose LSB
 -- script applies a status silently. skillDebuffs entries not yet observed are left alone --

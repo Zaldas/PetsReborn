@@ -16,6 +16,11 @@ local petAbilities              = nil;
 local wsDurations               = nil;
 local absorbSpells              = nil;
 local mobSkillSilentDebuffs     = nil;
+local bioDiaData                = nil;
+local spellMeta                 = nil;
+local physicalJaDebuffs         = nil;
+local bloodPactDebuffs          = nil;
+local wardBuffDurations         = nil;
 local FALLBACK_DURATION_S       = 300;
 
 -- Status-ON messages: action packet messages that carry a status effect application.
@@ -65,39 +70,8 @@ local spellDamageMes = {[2]=true,[252]=true,[264]=true,[265]=true}
 -- 284/367 are their AoE variants; that mapping lives in C++, so a Lua grep turns up nothing.
 local bioDiaNoDamageMes = {[7]=true,[85]=true,[284]=true,[367]=true}
 
--- Bio/Dia: mirrors server logic (onSpellCast in dia.lua / bio.lua).
--- The status lands regardless of damage dealt, including casts that deal none at all
--- (bioDiaNoDamageMes). Applies only on a strictly higher tier — a same-tier recast does not
--- refresh the duration.
--- Tiers: Dia(1) < Bio(2) < DiaII(3) < BioII(4) < DiaIII(5) < BioIII(6)
-local bioDiaData = {
-    [23]  = { statusId=134, opposing=135, tier=1, dur=60  },             -- Dia
-    [33]  = { statusId=134, opposing=135, tier=1, dur=60  },             -- Diaga
-    [24]  = { statusId=134, opposing=135, tier=3, dur=120, displayId=814 }, -- Dia II
-    [34]  = { statusId=134, opposing=135, tier=3, dur=120, displayId=814 }, -- Diaga II
-    [25]  = { statusId=134, opposing=135, tier=5, dur=180, displayId=821 }, -- Dia III
-    [230] = { statusId=135, opposing=134, tier=2, dur=60  },             -- Bio
-    [231] = { statusId=135, opposing=134, tier=4, dur=120, displayId=815 }, -- Bio II
-    [232] = { statusId=135, opposing=134, tier=6, dur=180, displayId=820 }, -- Bio III
-}
 -- [targetId] = { statusId, tier } — single slot; Bio/Dia are mutually exclusive.
 local bioDiaTiers = {}
-
--- Per-spell metadata applied in the statusOnMes path.
---   buffId    — override the status ID the server sends (e.g. Sleep II sends 2, we track as 19)
---   clears    — status IDs to remove before applying the new one
---   statusId  — expected status ID guard for displayId (must match ability.Param after buffId remap)
---   displayId — custom icon to show instead of the real status icon (base-tier spell clears it)
-local spellMeta = {
-    [259] = { buffId = 19, clears = {2, 193} },  -- Sleep II    → SLEEP_II (19), clears Sleep I + Lullaby
-    [274] = { buffId = 19, clears = {2, 193} },  -- Sleepga II  → SLEEP_II (19), clears Sleep I + Lullaby
-    [364] = { buffId = 19, clears = {2, 193} },  -- Sleepga III → SLEEP_II (19), clears Sleep I + Lullaby
-    [221] = { statusId = 3, displayId = 816 },   -- Poison II   → custom icon (816)
-    [226] = { statusId = 3, displayId = 816 },   -- Poisonga II → custom icon (816)
-    [80]  = { statusId = 4, displayId = 817 },   -- Paralyze II → custom icon (817)
-    [276] = { statusId = 5, displayId = 818 },   -- Blind II    → custom icon (818)
-    [79]  = { statusId = 13, displayId = 819 },  -- Slow II     → custom icon (819)
-}
 
 -- Owned by writeStatus/removeStatus: every write replaces the override and every explicit
 -- removal clears it, so it always belongs to the latest write.
@@ -108,72 +82,6 @@ local function getDisplayId(serverId, statusId)
     local overrides = displayIdOverrides[serverId]
     return (overrides and overrides[statusId]) or statusId
 end
-
--- Physical JA debuffs (type 3): weapon-based player abilities that apply status effects
--- server-side via addStatusEffect(). Fire as action type 3 (not type 6), so the normal
--- abilityDurations path never fires for them.
--- Keyed by ability ID (action.Param). Applied when damage > 0 (hit confirmed).
-local physicalJaDebuffs = {
-    [46] = { statusId = 10, duration = 6 },   -- Shield Bash (PLD) → STUN (10), fixed 6s
-    [77] = { statusId = 10, duration = 8 },   -- Weapon Bash (DRK) → STUN (10), random 2-8s; max
-    [57] = { statusId = 11, duration = 30 },  -- Shadowbind (RNG) → BIND (11), fixed 30s [LSB abilities.sql: actionType=3, not 6]
-    [170] = { statusId = 149, duration = 30 }, -- Angon (DRG) → DEFENSE_DOWN (149), 15s + 15s/merit; 30s = one merit [dragoon.lua useAngon]
-}
-
--- Blood pact debuffs/buffs on the pet or enemies: avatar pacts that apply status effects
--- server-side in ways the normal action packet paths cannot track.  Two sub-formats:
---
---   Physical hit path  { statusId, duration }
---     Avatar physical attack calls addStatusEffect() server-side.  Status does not appear
---     in AdditionalEffect bits.  Triggered only when ability.Param (damage) > 0 (hit
---     confirmed) and the target has no active timer (mirrors LSB hasStatusEffect check).
---
---   Message path  { messages = {[msgId]=true,...}, statuses = {[statusId]=duration,...} }
---     Avatar pact uses a custom result message (not in statusOnMes) and returns 0 from
---     the script, so ability.Param=0.  Triggered when ability.Message matches any entry
---     in messages{}; all statuses{} are applied simultaneously.
---
--- Keyed by ability ID (action.Param for type 13).
-local bloodPactDebuffs = {
-    -- ── Physical hit pacts ────────────────────────────────────────────────────
-    [513] = { statusId = 3,  duration = 60  },  -- Poison Nails  (Carbuncle) → Poison (3),      60s  [physical hit]
-    [528] = { statusId = 5,  duration = 30  },  -- Moonlit Charge(Fenrir)    → Blindness (5),   30s  [physical hit]
-    [529] = { statusId = 4,  duration = 90  },  -- Crescent Fang (Fenrir)    → Paralysis (4),   90s  [physical hit]
-    [578] = { statusId = 12, duration = 120 },  -- Tail Whip     (Leviathan) → Weight (12),    120s  [physical hit, resist-scaled]
-    [624] = { statusId = 10, duration = 2   },  -- Shock Strike  (Ramuh)     → Stun (10),        2s  [physical hit]
-    [627] = { statusId = 4,  duration = 60  },  -- Thunderspark  (Ramuh)     → Paralysis (4),   60s  [physical hit; thunderspark.lua]
-    [630] = { statusId = 10, duration = 15  },  -- Chaotic Strike(Ramuh)     → Stun (10),        3 hits × 0-5s; max 15s [horizonffxi.wiki/Chaotic_Strike]
-    [657] = { statusId = 12, duration = 120 },  -- Somnolence    (Diabolos)  → Weight (12),    120s  [physical hit; somnolence.lua]
-    -- ── Message-triggered pacts (custom msg, script returns 0) ────────────────
-    -- Ecliptic Growl (Fenrir): msg 364/365 (STATUS_BOOST/_2) → 7 stat boosts, 180s
-    [532] = { messages = {[364]=true, [365]=true}, statuses = {[80]=180, [81]=180, [82]=180, [83]=180, [84]=180, [85]=180, [86]=180} },
-    -- Ecliptic Howl (Fenrir): msg 146/147 (ACC_EVA_BOOST/_2) → ACCURACY_BOOST(90) + EVASION_BOOST(92), 180s
-    [533] = { messages = {[146]=true, [147]=true}, statuses = {[90]=180, [92]=180} },
-}
-
--- Blood pact ward buff durations: SMN avatar ward pacts that apply status effects to party
--- members via addStatusEffect() server-side.  Fire as type 13 (blood pact) actions with
--- msg=JA_GAIN_EFFECT (266) and ability.Param = statusId.
--- Keyed by blood pact ability ID (action.Param for type 13).
--- Duration = base value; actual in-game duration for skill-scaled pacts (Shining Ruby,
--- Hastega) is 180 + clamp(summoning_skill - 300, 0, 200) s.  180 is conservative minimum.
--- Source: LSB scripts/actions/abilities/pets/<name>.lua
-local wardBuffDurations = {
-    [514] = 180,  -- Shining Ruby     (Carbuncle) → SHINING_RUBY (154), 180s base [shining_ruby.lua]
-    [515] = 90,   -- Glittering Ruby  (Carbuncle) → random stat boost,  90s       [glittering_ruby.lua]
-    [548] = 60,   -- Crimson Howl     (Ifrit)     → WARCRY       (68),  60s+bonus [crimson_howl.lua]
-    [564] = 900,  -- Earthen Ward     (Titan)     → STONESKIN    (37),  900s      [earthen_ward.lua]
-    [579] = 120,  -- Spring Water     (Leviathan) → REFRESH      (43),  120s est. [observed in-game; script not explicit]
-    [595] = 180,  -- Hastega          (Garuda)    → HASTE        (33),  180s base [hastega.lua]
-    [596] = 900,  -- Aerial Armor     (Garuda)    → BLINK        (36),  900s      [aerial_armor.lua]
-    [610] = 180,  -- Frost Armor      (Shiva)     → ICE_SPIKES   (35),  180s base [frost_armor.lua]
-    [626] = 120,  -- Rolling Thunder  (Ramuh)     → ENTHUNDER    (98),  120s base [rolling_thunder.lua]
-    [628] = 180,  -- Lightning Armor  (Ramuh)     → SHOCK_SPIKES (38),  180s base [lightning_armor.lua]
-    [658] = 90,   -- Nightmare        (Diabolos)  → SLEEP_I      (2),   90s base  [nightmare.lua]
-    [660] = 180,  -- Noctoshield      (Fenrir)    → PHALANX      (116), 180s base [noctoshield.lua]
-    [661] = 180,  -- Dream Shroud     (Diabolos)  → MAGIC_ATK/DEF_BOOST, 180s base [dream_shroud.lua]
-}
-
 
 -------------------------------------------------------------------------------
 -- Unknown duration audit log
@@ -1038,6 +946,11 @@ statusTracker.init = function(opts)
     exclusionGroups           = dofile(opts.addonPath .. 'libs/status/data/exclusionGroups.lua');
     negativeEffects           = dofile(opts.addonPath .. 'libs/status/data/negativeEffects.lua');
     mobSkillSilentDebuffs     = dofile(opts.addonPath .. 'libs/status/data/mobSkillSilentDebuffs.lua');
+    bioDiaData                = dofile(opts.addonPath .. 'libs/status/data/bioDiaData.lua');
+    spellMeta                 = dofile(opts.addonPath .. 'libs/status/data/spellMeta.lua');
+    physicalJaDebuffs         = dofile(opts.addonPath .. 'libs/status/data/physicalJaDebuffs.lua');
+    bloodPactDebuffs          = dofile(opts.addonPath .. 'libs/status/data/bloodPactDebuffs.lua');
+    wardBuffDurations         = dofile(opts.addonPath .. 'libs/status/data/wardBuffDurations.lua');
 
     if opts.enableAuditLog ~= false then
         UNKNOWN_BUFF_LOG = AshitaCore:GetInstallPath() .. 'config/addons/' .. opts.addonName .. '/unknownDurations.log'
