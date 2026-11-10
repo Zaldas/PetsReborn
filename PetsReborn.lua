@@ -747,6 +747,8 @@ end)
 
 -- Main render loop
 ashita.events.register('d3d_present', 'petsreborn_present_cb', function()
+    statusLib.Update()
+
     -- Config window draws regardless of pet window visibility
     if _callbacks == nil then _callbacks = buildCallbacks() end
     configWindow.draw(prSettings, _callbacks, debugViewType)

@@ -50,6 +50,40 @@ local statusOffMes = {[64]=true,[159]=true,[204]=true,[206]=true,[321]=true,[322
 local WAKEUP_MES = 168  -- "X awakens." — woken from sleep by damage; param is not a status ID
 local deathMes = {[6]=true,[20]=true,[97]=true,[113]=true,[406]=true,[605]=true,[646]=true}
 
+-- Server's "prevent-action" status set: while any of these is genuinely active, the entity
+-- is AI-locked (Inactive state) and cannot generate an action packet at all — so observing
+-- ANY action packet from a tracked entity is deterministic proof these already ended.
+--   2=Sleep I, 7=Petrification, 10=Stun, 19=Sleep II, 28=Terror, 159=Penalty, 193=Lullaby
+local preventActionStatusIds = {[2]=true,[7]=true,[10]=true,[19]=true,[28]=true,[159]=true,[193]=true}
+-- Statuses that block one kind of action, keyed by the action packet type that proves them gone.
+-- Amnesia is checked only when readying starts, so a skill finish (11/13) proves nothing.
+--   4=MagicFinish, 8=MagicStart → 6=Silence, 29=Mute
+--   6=JobAbility, 7=SkillStart → 16=Amnesia
+local SILENCE_STATUS_IDS = {[6]=true,[29]=true}
+local AMNESIA_STATUS_IDS = {[16]=true}
+local actionBlockStatusIds = {
+    [4]=SILENCE_STATUS_IDS, [8]=SILENCE_STATUS_IDS,
+    [6]=AMNESIA_STATUS_IDS, [7]=AMNESIA_STATUS_IDS,
+}
+-- Type 4 also reports failed non-spell actions (paralyzed attack, skill out of range); every
+-- such packet carries this animation on its target result.
+local SKILL_INTERRUPT_ANIMATION = 508
+local TRUST_SPAWN_FLAG = 0x1000  -- set on trusts (4366), clear on pets (258), players and mobs
+
+-- An entity under Bind, Petrification or Terror cannot move, so a position change is
+-- deterministic proof all of them ended (Bind's 95%-per-hit break roll is not observable).
+-- Not included: Stun (mob skills pair it with knockback) and the Sleep family (has its own
+-- wake message, and is often cast on an entity still sliding to a stop).
+-- [serverId] = { x, y, z, seen, pending } — see pollMoveBlockBreak. seen = { [statusId] = expiry }
+-- of the live statuses at the last poll; a new or refreshed entry re-baselines, a removal keeps it.
+-- Accepted risk: knockback while the status is genuinely active reads as movement.
+-- 7=Petrification, 11=Bind, 28=Terror
+local MOVE_BLOCK_STATUS_IDS = {[7]=true,[11]=true,[28]=true}
+local moveBlockPositions = {}
+local MOVE_BLOCK_POLL_INTERVAL = 1  -- seconds between polls
+local MOVE_BLOCK_THRESHOLD = 0.5    -- yalms of position delta that counts as genuine movement (absorbs render-interpolation jitter)
+local _lastMoveBlockPollTime = 0
+
 -- Shadow images end when the images are consumed, not when the timer runs out. The wear-off
 -- message (206) is the signal for that, and the statusOff path already handles it.
 --
@@ -553,15 +587,64 @@ local function applyAdditionalEffect(action, target, ability, now)
     end
 end
 
--- A single-target physical hit landing on an entity proves its Copy Image images are spent.
-local function noteShadowProof(targetId, now)
-    local entity = statusTracker.trackedEntities[targetId]
+-- Remove every live status in statusIds from serverId.
+local function clearLiveStatuses(serverId, statusIds, now)
+    local entity = statusTracker.trackedEntities[serverId]
     if entity == nil then return end
-    for statusId in pairs(SHADOW_COPY_IMAGE_IDS) do
-        if entity[statusId] ~= nil and entity[statusId] > now then
-            removeStatus(targetId, statusId)
+    for statusId in pairs(statusIds) do
+        local expiry = entity[statusId]
+        if expiry ~= nil and expiry > now then
+            removeStatus(serverId, statusId)
         end
     end
+end
+
+-- A single-target physical hit landing on an entity proves its Copy Image images are spent.
+local function noteShadowProof(targetId, now)
+    clearLiveStatuses(targetId, SHADOW_COPY_IMAGE_IDS, now)
+end
+
+-- Interrupt-notification packets (cast/skill/item cut short) carry param=0x7073.
+-- Type 8/9 params are already 16-bit; types 7 (SkillStart) and 12 (RangedStart,
+-- RangedInterrupt) are 32-bit, so mask low 16.
+local function isInterruptNotification(action)
+    if action.Type == 8 or action.Type == 9 then
+        return action.Param == 0x7073
+    elseif action.Type == 7 or action.Type == 12 then
+        return bit.band(action.Param, 0xFFFF) == 0x7073
+    end
+    return false
+end
+
+-- Any observed action packet from an actor proves none of the prevent-action statuses
+-- can still be active on it (see preventActionStatusIds) — clear any we still track.
+local function clearPreventActionBreak(actorId, now)
+    clearLiveStatuses(actorId, preventActionStatusIds, now)
+end
+
+-- An action of a kind a status blocks proves that status is not active on the actor (see
+-- actionBlockStatusIds). Catches statuses that resisted or wore off without a message.
+-- Type 7 counts only from an actor resolved as a non-trust: trusts weapon skill through a path
+-- with no Amnesia check.
+local function clearActionBlockBreak(action, now)
+    local actionType = action.Type
+    local blocked = actionBlockStatusIds[actionType]
+    if blocked == nil then return end
+    local actorId = action.UserId
+    if statusTracker.trackedEntities[actorId] == nil then return end
+    local userIndex = action.UserIndex
+    if actionType == 7 and (userIndex == nil or userIndex == 0
+            or bit.band(AshitaCore:GetMemoryManager():GetEntity():GetSpawnFlags(userIndex), TRUST_SPAWN_FLAG) ~= 0) then
+        return
+    end
+    if actionType == 4 then
+        for _, target in pairs(action.Targets) do
+            for _, result in pairs(target.Actions) do
+                if result.Animation == SKILL_INTERRUPT_ANIMATION then return end
+            end
+        end
+    end
+    clearLiveStatuses(actorId, blocked, now)
 end
 
 statusTracker.HandleActionPacket = function(e)
@@ -589,6 +672,13 @@ statusTracker.HandleActionPacket = function(e)
     end
 
     local now = os.time()
+
+    -- A same-tick interrupt notification is not proof the actor acted — it means the actor's
+    -- own CC (e.g. Stun) just interrupted its cast, the opposite signal. Don't clear.
+    if not isInterruptNotification(action) then
+        clearPreventActionBreak(action.UserId, now)
+        clearActionBlockBreak(action, now)
+    end
 
     local partyMemberIds = helpers.GetPartyMemberIds();
     for _, target in pairs(action.Targets) do
@@ -765,6 +855,7 @@ statusTracker.HandleClearMessage = function(e)
         statusTracker.trackedEntities[parsedPacket.target] = nil
         bioDiaTiers[parsedPacket.target] = nil
         displayIdOverrides[parsedPacket.target] = nil
+        moveBlockPositions[parsedPacket.target] = nil
     elseif parsedPacket.message == WAKEUP_MES then
         -- Mob woke up from damage. param is not a status ID here; clear all sleep-family IDs.
         -- Sleep II is tracked under ID 19 (spellMeta buffId override), so clear both.
@@ -831,6 +922,7 @@ statusTracker.GetStatusEffects = function(serverId)
     if next(statusTracker.trackedEntities[serverId]) == nil then
         statusTracker.trackedEntities[serverId] = nil;
         displayIdOverrides[serverId] = nil;
+        moveBlockPositions[serverId] = nil;
     end
     return returnTable;
 end
@@ -881,8 +973,69 @@ local function sweepExpiredEntities()
             statusTracker.trackedEntities[sid] = nil;
             displayIdOverrides[sid] = nil;
             bioDiaTiers[sid] = nil;
+            moveBlockPositions[sid] = nil;
         end
     end
+end
+
+-- Poll live positions of entities with a tracked MOVE_BLOCK_STATUS_IDS status; movement beyond
+-- MOVE_BLOCK_THRESHOLD clears all of them. Baseline is deferred one poll: right after the status
+-- lands the rendered position can still be settling toward the server's, and a baseline taken
+-- then reads as false movement. The first sighting is pending; the second is the baseline.
+local function pollMoveBlockBreak(now)
+    if (now - _lastMoveBlockPollTime) < MOVE_BLOCK_POLL_INTERVAL then return end
+    _lastMoveBlockPollTime = now
+    local entMgr = AshitaCore:GetMemoryManager():GetEntity()
+    for serverId, buffs in pairs(statusTracker.trackedEntities) do
+        local live = nil
+        for statusId in pairs(MOVE_BLOCK_STATUS_IDS) do
+            local expiry = buffs[statusId]
+            if expiry ~= nil and expiry > now then
+                live = live or {}
+                live[statusId] = expiry
+            end
+        end
+        if live == nil then
+            moveBlockPositions[serverId] = nil
+        else
+            -- index == 0: despawned or out of range — keep any baseline and retry next poll.
+            local index = helpers.GetIndexFromId(serverId)
+            if index ~= nil and index ~= 0 then
+                local x, y, z = entMgr:GetLocalPositionX(index), entMgr:GetLocalPositionY(index), entMgr:GetLocalPositionZ(index)
+                local tracked = moveBlockPositions[serverId]
+                -- A status absent from seen, or with a changed expiry, is a fresh (re)apply.
+                local fresh = (tracked == nil)
+                if not fresh then
+                    for statusId, expiry in pairs(live) do
+                        if tracked.seen[statusId] ~= expiry then
+                            fresh = true
+                            break
+                        end
+                    end
+                end
+                if fresh then
+                    moveBlockPositions[serverId] = { x = x, y = y, z = z, seen = live, pending = true }
+                elseif tracked.pending then
+                    tracked.seen = live
+                    tracked.x, tracked.y, tracked.z = x, y, z
+                    tracked.pending = nil
+                else
+                    -- Compare against the settled baseline so slow drift accumulates.
+                    tracked.seen = live
+                    local dx, dy, dz = x - tracked.x, y - tracked.y, z - tracked.z
+                    if math.sqrt(dx*dx + dy*dy + dz*dz) > MOVE_BLOCK_THRESHOLD then
+                        clearLiveStatuses(serverId, MOVE_BLOCK_STATUS_IDS, now)
+                        moveBlockPositions[serverId] = nil
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Call every frame from d3d_present.
+statusTracker.Update = function()
+    pollMoveBlockBreak(os.time())
 end
 
 statusTracker.GetRelevantTargets = function()
@@ -967,6 +1120,7 @@ statusTracker.clearEntity = function(serverId)
     statusTracker.trackedEntities[serverId] = nil
     bioDiaTiers[serverId] = nil
     displayIdOverrides[serverId] = nil
+    moveBlockPositions[serverId] = nil
 end
 
 -- Tears down this module's registered event handler. Call from the addon's unload event.
@@ -984,6 +1138,7 @@ ashita.events.register('packet_in', '__status_packet_in_cb', function (e)
         statusTracker.relevantTargets = T{};
         bioDiaTiers = {};
         displayIdOverrides = {};
+        moveBlockPositions = {};
     elseif (e.id == 0x0029) then
         statusTracker.HandleClearMessage(e);
     elseif (e.id == 0x0028) then

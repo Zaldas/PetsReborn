@@ -108,6 +108,10 @@ status.clearTrackedEntity = function(serverId)
     tracker.clearEntity(serverId)
 end
 
+status.Update = function()
+    tracker.Update()
+end
+
 status.ClearIconCache = function()
     icons.clear_cache();
 end
