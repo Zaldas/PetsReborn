@@ -289,6 +289,7 @@ return {
 
         -- ── Pugil ─────────────────────────────────────────────────────────────
         [458] = 120,  -- Ink Jet         → BLINDNESS (5)         fixed 120s [ink_jet.lua]
+        [449] = 120,  -- Intimidate      → SLOW (13)             fixed 120s [intimidate.lua]
 
         -- ── Sabotender ────────────────────────────────────────────────────────
         [329] = 60,   -- Pinecone Bomb   → SLEEP_I (2)           fixed 60s [pinecone_bomb.lua]
