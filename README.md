@@ -53,14 +53,54 @@ The `default` and `Segoe UI` text in the layouts uses fonts Windows already prov
 | Command | Effect |
 |---------|--------|
 | `/petsreborn` or `/pr` | Toggle the config window |
+| `/petsreborn help` | List commands |
 | `/petsreborn reload` | Reload layout and settings |
 | `/petsreborn debug` | Print current pet state to chat |
 
 ## Customising a layout
 
-You do not need to understand the token system to build a style. Copy `layouts/ffxi.lua`,
-change what you want, save it under a new name in `layouts/`, and select it in the config
-window.
+You do not need to understand the token system to build a style. Create a file under a new
+name in `layouts/`, list only what you want to change, and select it in the config window:
+
+```lua
+-- layouts/myStyle.lua
+return {
+    extends = 'ffxi',
+    petFrame = {
+        hp = { bar = { imgBar = { color = '#FF4444FF' } } },
+        statusEffects = { pos = {10, 4} },
+    },
+}
+```
+
+`extends` names another style in `layouts/`; that style is loaded first (following its own
+`extends`, if any) and each value in your file is merged over the parent's value at the
+same key:
+
+- A value that is not a table (number, string, `true`/`false`) replaces the parent's.
+- A table with a `[1]` entry is a full list and replaces the parent's value whole: give
+  `pos`, `size`, `sliceBorder`, an `anchor` list, `thresholds` or `elementColors` in full
+  to set all of it.
+- Any other table — named keys, a sparse patch such as `{[5] = '#FF4444FF'}` or
+  `{nil, 4}`, or `{}` — patches the parent's value: it starts from the parent's table (or
+  an empty one when the parent has none there) and merges each of its keys by these same
+  rules. So `imgBar = { color = ... }` keeps the parent's `path`, `size` and the rest of
+  `imgBar`; a child `bind` changes only the keys it lists; `elementColors = {[5] = ...}`
+  recolours one element; `pos = {nil, 4}` sets only the second coordinate;
+  `thresholds = { default = ... }` adds a catch-all to the inherited ramp; `{}` changes
+  nothing.
+- The merged layout is built from copies: two keys that share one table in your file are
+  independent after loading, and the parent style is unchanged.
+- An inherited key cannot be removed. `false` is copied like any other value (keys such
+  as `bold = false` are ordinary settings), so setting a section to `false` does not
+  remove it and is unsupported. To drop a section, write a full layout instead.
+
+A file without `extends` is a complete layout on its own; copying `layouts/ffxi.lua` and
+editing it still works. `layouts/ffxi.lua` documents every key. If the selected style or
+any style it extends fails to load — missing, broken, or an `extends` cycle — the error is
+printed and the `ffxi` layout is shown instead. If `ffxi` itself fails to load, its error
+is printed and no pet window is drawn. Changes made in the in-game layout editor are saved
+per style and apply on top of the merged layout.
 
 - [`docs/TOKENS.md`](docs/TOKENS.md) — every token a layout can bind
 - [`docs/BINDS.md`](docs/BINDS.md) — which element consumes which binding

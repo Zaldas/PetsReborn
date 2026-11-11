@@ -45,9 +45,12 @@ local statusOnMes = {[101]=true,[127]=true,[160]=true,[164]=true,[166]=true,[186
 -- Status-OFF messages: action/message packet messages that indicate a status was removed.
 --   64=[retail], 159=SKILL_ERASE, 204=IS_NO_LONGER_STATUS, 206=STATUS_WEARS_OFF,
 --   321=JA_REMOVE_EFFECT_2, 322=[retail], 341=MAGIC_ERASE, 342/343/344=[retail],
---   350=[retail], 378=ITEM_EFFECT_DISAPPEARS, 531/647/805/806=[retail]
-local statusOffMes = {[64]=true,[159]=true,[204]=true,[206]=true,[321]=true,[322]=true,[341]=true,[342]=true,[343]=true,[344]=true,[350]=true,[378]=true,[531]=true,[647]=true,[805]=true,[806]=true}
-local WAKEUP_MES = 168  -- "X awakens." — woken from sleep by damage; param is not a status ID
+--   350=[retail], 378=ITEM_EFFECT_DISAPPEARS, 531/647/805/806=[retail],
+--   168=ADD_EFFECT_DISPEL (sent as an additional-effect message; param is the removed status)
+local statusOffMes = {[64]=true,[159]=true,[168]=true,[204]=true,[206]=true,[321]=true,[322]=true,[341]=true,[342]=true,[343]=true,[344]=true,[350]=true,[378]=true,[531]=true,[647]=true,[805]=true,[806]=true}
+-- Sleep-family status IDs: 2=Sleep I, 19=Sleep II (tracked as 19 via spellMeta buffId),
+-- 193=Lullaby. They share wear-off messaging, so they are always cleared together.
+local SLEEP_FAMILY_STATUS_IDS = {[2]=true, [19]=true, [193]=true}
 local deathMes = {[6]=true,[20]=true,[97]=true,[113]=true,[406]=true,[605]=true,[646]=true}
 
 -- Server's "prevent-action" status set: while any of these is genuinely active, the entity
@@ -109,7 +112,7 @@ local bioDiaTiers = {}
 
 -- Owned by writeStatus/removeStatus: every write replaces the override and every explicit
 -- removal clears it, so it always belongs to the latest write.
--- [serverId][realStatusId] = displayStatusId (814-1022 range, see libs/status/icons/README.md)
+-- [serverId][realStatusId] = displayStatusId (814-1022 range)
 local displayIdOverrides = {}
 
 local function getDisplayId(serverId, statusId)
@@ -117,172 +120,19 @@ local function getDisplayId(serverId, statusId)
     return (overrides and overrides[statusId]) or statusId
 end
 
--------------------------------------------------------------------------------
--- Unknown duration audit log
--------------------------------------------------------------------------------
+-- [displayId] = real status ID; built in init from bioDiaData and spellMeta
+local baseStatusIds = {}
 
-local UNKNOWN_BUFF_LOG    = nil
-local loggedUnknownSpells   = {}  -- [spellId]  = true; deduplicate within a session
-local loggedUnknownSelfBuffs = {}  -- [statusId] = true; deduplicate mob self-buffs within a session
-local loggedUntrackedMobSkills = {}  -- [skillId]  = true; deduplicate unrecognized mob skill hits
-
-local function logUnknownDuration(spellId, statusId)
-    if not UNKNOWN_BUFF_LOG then return end
-    if loggedUnknownSpells[spellId] then return end
-    loggedUnknownSpells[spellId] = true
-    local resMgr = AshitaCore:GetResourceManager()
-    local spellRes = resMgr and resMgr:GetSpellById(spellId)
-    local spellName = (spellRes and spellRes.Name and spellRes.Name[1]) or '?'
-    local f = io.open(UNKNOWN_BUFF_LOG, 'a')
-    if not f then return end
-    f:write(string.format('%s  spellId=%-5d  statusId=%-5d  name=%s\n',
-        os.date('%Y-%m-%d %H:%M:%S'), spellId, statusId, spellName))
-    f:close()
-end
-
--- Mob skill names live in the client's 'monsters.abilities' string table indexed at
--- skillId - 256; GetAbilityById is a different namespace and returns an unrelated
--- name for the same number (mob skill 1836 Nerve Gas resolves there as "Frogkick").
-local function resolveMobSkillName(skillId)
-    local resMgr = AshitaCore:GetResourceManager()
-    if not resMgr then return nil end
-    if skillId < 256 then
-        local res = resMgr:GetAbilityById(skillId)
-        if res and res.Name and res.Name[1] and res.Name[1] ~= '' then return res.Name[1] end
-        return nil
-    end
-    local name = resMgr:GetString('monsters.abilities', skillId - 256)
-    if name and name ~= '' then return name end
-    return nil
-end
-
--- Log type 7/11 mob skills that dealt damage but had no status message and are not in any
--- tracking table. Candidates for mobSkillSilentDebuffs if LSB confirms a silent
--- mobStatusEffectMove() call. Deduplicated by skill ID per session.
--- hasSkillDebuffs marks a skill that owns a skillDebuffs entry which this damage message could
--- not reach — the strongest silent-status candidates, since the entry proves a status is known.
-local function logUntrackedMobSkillHit(skillId, message, damage, actorId, targetId, hasSkillDebuffs)
-    if not UNKNOWN_BUFF_LOG then return end
-    if loggedUntrackedMobSkills[skillId] then return end
-    loggedUntrackedMobSkills[skillId] = true
-    local skillName = resolveMobSkillName(skillId) or ('skill#' .. skillId)
-    local f = io.open(UNKNOWN_BUFF_LOG, 'a')
-    if not f then return end
-    f:write(string.format('%s  UNTRACKED_MOB_SKILL  skillId=%-5d  msg=%-4d  dmg=%-6d  actor=%-8d  target=%-8d  entry=%-11s name=%s\n',
-        os.date('%Y-%m-%d %H:%M:%S'), skillId, message, damage, actorId or 0, targetId or 0,
-        hasSkillDebuffs and 'skillDebuffs' or 'none', skillName))
-    f:close()
-end
-
--------------------------------------------------------------------------------
--- Status effect audit log
--- Records every status-on application so timers can be audited.
--- Output: config/addons/<addonName>/statusAudit.log (addonName passed to statusLib.init())
--- Fields: action type, ability/spell ID+name, statusId, message, actor, target,
---         duration assigned, and which lookup table provided it (or FALLBACK_300).
--------------------------------------------------------------------------------
-
-local STATUS_AUDIT_LOG = nil
-
--- Resolve a human-readable name for an ability/spell ID given the action type.
-local function resolveAbilityName(actionType, abilityId)
-    local resMgr = AshitaCore:GetResourceManager()
-    if not resMgr then return '?' end
-    -- Types 4/8 = magic spell (finish / cast start)
-    if actionType == 4 or actionType == 8 then
-        local res = resMgr:GetSpellById(abilityId)
-        return (res and res.Name and res.Name[1]) or ('spell#' .. abilityId)
-    end
-    -- Types 6 = job ability, 7 = monster skill, 11 = 2hr/special.
-    -- Automaton abilities resolve to the wrong name via GetAbilityById, and always arrive
-    -- as type 11 (MobSkillFinish) — never type 7.
-    if actionType == 11 then
-        local petName = petAbilities and petAbilities.names[abilityId]
-        if petName then return petName end
-    end
-    -- Monster skills index a separate string table, not the ability table.
-    if actionType == 7 or actionType == 11 then
-        local mobName = resolveMobSkillName(abilityId)
-        if mobName then return mobName end
-    end
-    -- The client's ability table indexes weapon skills at the raw ID and job abilities at
-    -- ID + 0x200. Type 3 carries both: weapon skills and the physical JAs.
-    local lookupId = abilityId
-    if actionType == 6 or (actionType == 3 and physicalJaDebuffs and physicalJaDebuffs[abilityId]) then
-        lookupId = abilityId + 0x200
-    end
-    local res = resMgr:GetAbilityById(lookupId)
-    if res and res.Name and res.Name[1] and res.Name[1] ~= '' then
-        return res.Name[1]
-    end
-    return ('ability#' .. abilityId)
-end
-
--- Resolve an entity name from its server ID via entity memory.
-local function resolveEntityName(serverId)
-    if not serverId or serverId == 0 then return '?' end
-    local entMgr = AshitaCore:GetMemoryManager():GetEntity()
-    if not entMgr then return '?' end
-    -- Monster shortcut
-    if bit.band(serverId, 0x1000000) ~= 0 then
-        local idx = bit.band(serverId, 0xFFF)
-        if idx >= 0x900 then idx = idx - 0x100 end
-        if idx < 0x900 and entMgr:GetServerId(idx) == serverId then
-            return entMgr:GetName(idx) or '?'
-        end
-    end
-    for i = 1, 0x8FF do
-        if entMgr:GetServerId(i) == serverId then
-            return entMgr:GetName(i) or '?'
-        end
-    end
-    return '?'
-end
-
--- Log mob self-buffs whose statusId is not in mobStatusDurations.selfBuffs.
--- These are candidates to add to selfBuffs once the correct duration is researched.
-local function logUnknownMobSelfBuff(actionType, abilityId, statusId, actorId)
-    if not UNKNOWN_BUFF_LOG then return end
-    if loggedUnknownSelfBuffs[statusId] then return end
-    loggedUnknownSelfBuffs[statusId] = true
-    local actorName = resolveEntityName(actorId)
-    local abilityName = resolveAbilityName(actionType, abilityId)
-    local actionTypeName = ({[7]='MobSkill',[11]='MobSpecial'})[actionType] or ('t'..actionType)
-    local f = io.open(UNKNOWN_BUFF_LOG, 'a')
-    if not f then return end
-    f:write(string.format('%s  MOB_SELF_BUFF  %-10s abilityId=%-5d %-22s statusId=%-5d actor=%08X(%s)\n',
-        os.date('%Y-%m-%d %H:%M:%S'), actionTypeName, abilityId, abilityName, statusId, actorId, actorName))
-    f:close()
-end
-
--- Log a status-on event. Called for every status application so we can audit timers.
--- durationSrc: 'abilityDurations' | 'mobStatusDurations' | 'spellDurations' | 'FALLBACK_300'
-local function logStatusApplication(actionType, abilityId, statusId, message, actorId, targetId, duration, durationSrc)
-    if not STATUS_AUDIT_LOG then return end
-    local f = io.open(STATUS_AUDIT_LOG, 'a')
-    if not f then return end
-    local abilityName = resolveAbilityName(actionType, abilityId)
-    local actorName   = resolveEntityName(actorId)
-    local targetName  = resolveEntityName(targetId)
-    local isSelf      = (actorId == targetId) and 'SELF' or 'OTHER'
-    local actionTypeName = ({[4]='Spell',[6]='JA',[7]='MobSkill',[8]='CastStart',[11]='MobSpecial',[13]='Pet'})[actionType] or ('t'..actionType)
-    f:write(string.format(
-        '%s  [STATUS_ON]  %-8s id=%-5d %-22s statusId=%-4d msg=%-4d %s  actor=%08X(%-16s) target=%08X(%-16s)  dur=%3ds  src=%s\n',
-        os.date('%Y-%m-%d %H:%M:%S'),
-        actionTypeName, abilityId, abilityName,
-        statusId, message, isSelf,
-        actorId, actorName, targetId, targetName,
-        duration, durationSrc))
-    f:close()
-end
+-- Server ID of the only entity tracked (the pet); 0 = none. Action packets that neither come
+-- from nor land on it are dropped before any entity lookup.
+local trackedId = 0
 
 -------------------------------------------------------------------------------
 -- exported functions
 -------------------------------------------------------------------------------
 
-local statusTracker = { 
-    trackedEntities = T{}; -- entites by serverId that we are tracking buffs and debuffs on
-    relevantTargets = T{}; -- targets by targetIndex that are relevant to the player
+local statusTracker = {
+    trackedEntities = T{}; -- entities by serverId that we are tracking buffs and debuffs on
 };
 
 -- Every status write and explicit removal must go through these so the tier icon always
@@ -314,22 +164,17 @@ local function removeStatus(serverId, statusId)
     if overrides then overrides[statusId] = nil end
 end
 
--- if a mob updates its claimid to be us or a party member add it to the list
-statusTracker.HandleMobUpdatePacket = function(e)
-    local mobUpdate = helpers.ParseMobUpdatePacket(e);
-	if (mobUpdate == nil) then 
-		return; 
-	end
-    if (helpers.GetIsValidMob(mobUpdate.monsterIndex)) then
-        if (mobUpdate.newClaimId ~= nil) then	
-            local partyMemberIds = helpers.GetPartyMemberIds();
-            if ((partyMemberIds:contains(mobUpdate.newClaimId))) then
-                statusTracker.relevantTargets[mobUpdate.monsterIndex] = 1;
-            end
-        end
-    else
-        statusTracker.relevantTargets[mobUpdate.monsterIndex] = nil; -- Clear non valid mobs that have received an update
-    end
+-- Drops an entity's status shell and every side table keyed by it.
+local function clearTrackedShell(serverId)
+    statusTracker.trackedEntities[serverId] = nil
+    bioDiaTiers[serverId] = nil
+    displayIdOverrides[serverId] = nil
+    moveBlockPositions[serverId] = nil
+end
+
+-- Real status ID behind a display ID, for resource lookups.
+statusTracker.GetBaseStatusId = function(statusId)
+    return baseStatusIds[statusId] or statusId
 end
 
 -------------------------------------------------------------------------------
@@ -395,7 +240,6 @@ end
 -- resolved duration is a known-zero shadow/luopan-based effect with no time component).
 local function applyStatusOn(action, target, ability, now, isPetActor)
     local spell = action.Param
-    local message = ability.Message
     -- Regular buffs/debuffs (including mob skills targeting the pet). ability.Param is
     -- bit-unpacked so it defaults to 0 (never nil); treat 0 as "no status ID" and fall back to
     -- the spell table for type-4 casts.
@@ -410,33 +254,32 @@ local function applyStatusOn(action, target, ability, now, isPetActor)
     local meta = action.Type == 4 and spellMeta[spell] or nil
     if meta and meta.buffId then statusId = meta.buffId end
 
-    local durationSrc
     local duration
     if action.Type == 6 and abilityDurations[spell] then
-        duration = abilityDurations[spell]; durationSrc = 'abilityDurations'
+        duration = abilityDurations[spell]
     elseif action.Type == 3 and physicalJaDebuffs[spell] then
-        -- physicalJaDebuffs handles this below with hit confirmation; skip FALLBACK here
-        duration = physicalJaDebuffs[spell].duration; durationSrc = 'physicalJaDebuffs'
+        -- Applied immediately: the statusOnMes-classified message already confirms the status
+        -- landed. applyPhysicalJaDebuff handles the same ability arriving with a damage message.
+        duration = physicalJaDebuffs[spell].duration
     elseif isPetActor and action.Type == 11 and petAbilities ~= nil and petAbilities.durations[spell] ~= nil then
         -- Ahead of skillDebuffs: pet ability IDs share the mob-skill namespace, so a pet
         -- ability must not resolve against a mob-skill entry of the same ID.
-        duration = petAbilities.durations[spell]; durationSrc = 'petAbilities'
+        duration = petAbilities.durations[spell]
     elseif (action.Type == 7 or action.Type == 11 or (action.Type == 3 and action.UserIndex ~= nil and helpers.GetIsMob(action.UserIndex) == true)) and mobStatusDurations ~= nil and mobStatusDurations.skillDebuffs[spell] ~= nil then
         local skillEntry = mobStatusDurations.skillDebuffs[spell]
         if type(skillEntry) == 'table' then
             local d = statusId and skillEntry[statusId]
-            if d ~= nil then duration = d; durationSrc = 'mobStatusDurations' end
+            if d ~= nil then duration = d end
         else
-            duration = skillEntry; durationSrc = 'mobStatusDurations'
+            duration = skillEntry
         end
     elseif action.Type == 4 and spellDurations[spell] then
-        duration = spellDurations[spell]; durationSrc = 'spellDurations'
+        duration = spellDurations[spell]
     elseif action.Type == 13 and wardBuffDurations[spell] then
-        duration = wardBuffDurations[spell]; durationSrc = 'wardBuffDurations'
+        duration = wardBuffDurations[spell]
     end
     if duration == nil then
-        logUnknownDuration(spell, statusId);
-        duration = FALLBACK_DURATION_S; durationSrc = 'FALLBACK_300'
+        duration = FALLBACK_DURATION_S
     end
     if duration == 0 then return true end  -- shadow/luopan-based effects have no time component
     if meta and meta.clears then
@@ -446,7 +289,6 @@ local function applyStatusOn(action, target, ability, now, isPetActor)
     end
     local displayId = meta and meta.statusId == statusId and meta.displayId or nil
     recordStatus(target.Id, statusId, now + duration, false, displayId)
-    logStatusApplication(action.Type, spell, statusId, message, action.UserId, target.Id, duration, durationSrc);
     return false
 end
 
@@ -454,17 +296,13 @@ end
 -- duration where known. Captured regardless of targeting (e.g. 2hr Invincible mid-fight).
 local function applyMobSelfBuff(action, target, ability, now)
     local spell = action.Param
-    local message = ability.Message
     local statusId = ability.Param
     if statusId and statusId ~= 0 then
         local dur = mobStatusDurations.getSelfBuffDuration(statusId, spell)
-        if dur == nil then
-            logUnknownMobSelfBuff(action.Type, spell, statusId, action.UserId)
-        elseif dur > 0 then
+        -- nil: unknown self-buff; 0: known permanent effect (e.g. bastion_of_twilight)
+        if dur ~= nil and dur > 0 then
             recordStatus(target.Id, statusId, now + dur)
-            logStatusApplication(action.Type, spell, statusId, message, action.UserId, target.Id, dur, 'selfBuffs')
         end
-        -- dur == 0: known permanent effect (e.g. bastion_of_twilight), silently skip
     end
 end
 
@@ -477,31 +315,30 @@ local function applyStatusOff(action, target, ability, now)
     end
 end
 
--- Physical JA debuffs (type 3): weapon-based abilities (Shield Bash, Weapon Bash).
--- Apply on hit confirmed (ability.Param = damage > 0), no overwrite if already active.
 -- Absorb-*: the packet carries the target's debuff message only. Apply that debuff, and the
 -- caster's matching boost, which the server grants silently.
 local function applyAbsorbSpell(action, target, ability, now)
     local absorb = absorbSpells and absorbSpells[action.Param]
     if absorb == nil or ability.Message ~= absorb.message then return false end
     local expiry = now + absorb.duration
-    if statusTracker.trackedEntities[target.Id] then
+    if target.Id == trackedId then
         recordStatus(target.Id, absorb.down, expiry)
     end
-    recordStatus(action.UserId, absorb.boost, expiry)
-    logStatusApplication(4, action.Param, absorb.down, ability.Message, action.UserId, target.Id, absorb.duration, 'absorbSpells')
+    if action.UserId == trackedId then
+        recordStatus(action.UserId, absorb.boost, expiry)
+    end
     return true
 end
 
+-- Physical JA debuffs (type 3): weapon-based abilities (Shield Bash, Weapon Bash).
+-- Apply on hit confirmed (ability.Param = damage > 0), no overwrite if already active.
 local function applyPhysicalJaDebuff(action, target, ability, now)
     local spell = action.Param
-    local message = ability.Message
     local jaDebuff = physicalJaDebuffs[spell]
     if jaDebuff and ability.Param > 0 then
         local existing = statusTracker.trackedEntities[target.Id][jaDebuff.statusId]
         if not existing or existing <= now then
             recordStatus(target.Id, jaDebuff.statusId, now + jaDebuff.duration, true)
-            logStatusApplication(3, spell, jaDebuff.statusId, message, action.UserId, target.Id, jaDebuff.duration, 'physicalJaDebuffs')
         end
     end
 
@@ -514,7 +351,6 @@ local function applyPhysicalJaDebuff(action, target, ability, now)
             local existing = statusTracker.trackedEntities[target.Id][statusId]
             if not existing or existing <= now then
                 recordStatus(target.Id, statusId, now + ws.duration, true)
-                logStatusApplication(3, spell, statusId, message, action.UserId, target.Id, ws.duration, 'wsDurations')
             end
         end
     end
@@ -531,7 +367,6 @@ local function applyBloodPact(action, target, ability, now)
         if pactDebuff.messages[ability.Message] then
             for sid, dur in pairs(pactDebuff.statuses) do
                 recordStatus(target.Id, sid, now + dur)
-                logStatusApplication(13, action.Param, sid, ability.Message, action.UserId, target.Id, dur, 'bloodPactDebuffs')
             end
         end
     elseif ability.Param > 0 then
@@ -539,7 +374,6 @@ local function applyBloodPact(action, target, ability, now)
         local existing = statusTracker.trackedEntities[target.Id][pactDebuff.statusId]
         if not existing or existing <= now then
             recordStatus(target.Id, pactDebuff.statusId, now + pactDebuff.duration, true)
-            logStatusApplication(13, action.Param, pactDebuff.statusId, ability.Message, action.UserId, target.Id, pactDebuff.duration, 'bloodPactDebuffs')
         end
     end
 end
@@ -552,10 +386,8 @@ end
 local function applySilentMobDebuff(action, target, ability, now)
     local spell = action.Param
     local silentDebuff = mobSkillSilentDebuffs[spell]
-    local silentSrc = 'mobSkillSilentDebuffs'
     if not silentDebuff and petAbilities then
         silentDebuff = petAbilities.hitData[spell]
-        silentSrc = 'petAbilities'
     end
     if silentDebuff and ability.Param > 0 and ability.Message ~= SHADOW_ABSORB_MES then
         -- Multi-status skills hold a list of records; single-status ones are the record itself.
@@ -564,7 +396,6 @@ local function applySilentMobDebuff(action, target, ability, now)
             local existing = statusTracker.trackedEntities[target.Id][record.statusId]
             if not existing or existing <= now then
                 recordStatus(target.Id, record.statusId, now + record.duration, true)
-                logStatusApplication(action.Type, spell, record.statusId, ability.Message, action.UserId, target.Id, record.duration, silentSrc)
             end
         end
     end
@@ -583,6 +414,36 @@ local function applyAdditionalEffect(action, target, ability, now)
             recordStatus(target.Id, aeStatusId, now + aeDuration)
         elseif statusOffMes[aeMessage] then
             removeStatus(target.Id, aeStatusId)
+        end
+    end
+end
+
+-- Mob skills sent with message 0 (xi.msg.basic.NONE), which the statusOnMes path never sees.
+--   self-buff: actor == target, status looked up by skill ID via selfBuffSkillMap
+--              (e.g. Transmogrification -> Physical Shield, Mind Wall -> Magic Shield)
+--   debuff:    actor ~= target, Param carries the status ID, duration from skillDebuffs
+--              (e.g. Nuclear Waste -> Elemental Res Down)
+local function applyNoneMessageSkill(action, target, ability, now)
+    local skillId = action.Param
+    if action.UserId == target.Id then
+        local statusId = mobStatusDurations.selfBuffSkillMap[skillId]
+        if statusId == nil then return end
+        local dur = mobStatusDurations.getSelfBuffDuration(statusId, skillId)
+        if dur ~= nil and dur > 0 then
+            recordStatus(target.Id, statusId, now + dur)
+        end
+    else
+        local statusId = ability.Param
+        local skillEntry = mobStatusDurations.skillDebuffs[skillId]
+        if statusId == 0 or skillEntry == nil then return end
+        local dur
+        if type(skillEntry) == 'table' then
+            dur = skillEntry[statusId]
+        else
+            dur = skillEntry
+        end
+        if dur ~= nil and dur > 0 then
+            recordStatus(target.Id, statusId, now + dur)
         end
     end
 end
@@ -648,18 +509,28 @@ local function clearActionBlockBreak(action, now)
 end
 
 statusTracker.HandleActionPacket = function(e)
+    if trackedId == 0 then return end
 
     local action = helpers.ParseActionPacket(e);
     if (action == nil) then
         return;
     end
 
-    local relevantTarget = helpers.GetIsMob(action.UserIndex) and helpers.GetIsValidMob(action.UserIndex);
+    local actorIsTracked = (action.UserId == trackedId)
+    local targetsTracked = false
+    for _, target in pairs(action.Targets) do
+        if target.Id == trackedId then
+            targetsTracked = true
+            break
+        end
+    end
+    if not actorIsTracked and not targetsTracked then return end
 
-    -- ParseActionPacket sets UserIndex via GetIndexFromId, which returns 0 on a miss, and
-    -- index 0 is the local player.
+    -- GetIndexFromId can walk the whole entity array, so it runs only past the filter above.
+    -- It returns 0 on a miss, and index 0 is the local player.
+    action.UserIndex = helpers.GetIndexFromId(action.UserId)
     local isPetActor = false
-    if action.UserIndex ~= nil and action.UserIndex ~= 0 then
+    if action.UserIndex ~= 0 then
         isPetActor = (helpers.GetIsPartyPet(action.UserIndex) == true)
     end
     -- Pet abilities absent from petAbilities keep the mob-skill treatment: applyMobSelfBuff
@@ -680,16 +551,16 @@ statusTracker.HandleActionPacket = function(e)
         clearActionBlockBreak(action, now)
     end
 
-    local partyMemberIds = helpers.GetPartyMemberIds();
     for _, target in pairs(action.Targets) do
-        -- Update our relvant enemies first
-        if (relevantTarget and partyMemberIds:contains(target.Id)) then
-            statusTracker.relevantTargets[action.UserIndex] = 1;
-        end
         for _, ability in pairs(target.Actions) do
-            -- Set up our state
-            local spell = action.Param
             local message = ability.Message
+            if target.Id ~= trackedId then
+                -- Absorb-* cast by the tracked entity grants it the matching boost.
+                if actorIsTracked and action.Type == 4 then
+                    applyAbsorbSpell(action, target, ability, now)
+                end
+                goto continue_ability
+            end
             if (statusTracker.trackedEntities[target.Id] == nil) then
                 statusTracker.trackedEntities[target.Id] = T{};
             end
@@ -718,7 +589,7 @@ statusTracker.HandleActionPacket = function(e)
                     if applyStatusOn(action, target, ability, now, isPetActor) then
                         goto continue_ability
                     end
-                elseif action.UserId == target.Id then
+                else
                     applyMobSelfBuff(action, target, ability, now)
                 end
             elseif statusOffMes[message] then
@@ -740,32 +611,14 @@ statusTracker.HandleActionPacket = function(e)
             -- Mob skill silent debuffs: mob skills that apply status via mobStatusEffectMove()
             -- but never call skill:setMsg() — damage message fires, status lands silently.
             -- Only applied when ability.Param (damage) > 0 and no active timer exists.
-            if (action.Type == 7 or action.Type == 11) and action.UserId ~= target.Id and spell then
+            if (action.Type == 7 or action.Type == 11) and action.UserId ~= target.Id then
                 applySilentMobDebuff(action, target, ability, now)
             end
 
-            -- Catch-all: type 7/11 mob skills that dealt damage (ability.Param > 0) with a
-            -- message outside statusOnMes and not NONE (0), and are not already covered by
-            -- mobSkillSilentDebuffs or petAbilities.hitData. Logged once per skill ID per
-            -- session to unknownDurations.log as UNTRACKED_MOB_SKILL — candidates for
-            -- mobSkillSilentDebuffs if LSB confirms a silent mobStatusEffectMove() call
-            -- (thunderspark pattern).
-            -- A skillDebuffs entry does NOT suppress this: that table is only read from the
-            -- status-message and NONE-message paths, so on a damage message it did nothing.
-            -- Suppressing on it hid barofield (1832) and nerve_gas's POISON from every log.
-            if (action.Type == 7 or action.Type == 11)
-                    and action.UserId ~= target.Id
-                    and spell
-                    and ability.Param > 0
-                    and message ~= SHADOW_ABSORB_MES
-                    and not statusOnMes[message]
-                    and message ~= 0 then
-                local debuffs = mobStatusDurations and mobStatusDurations.skillDebuffs
-                local petHits = petAbilities and petAbilities.hitData
-                if not mobSkillSilentDebuffs[spell] and not (petHits and petHits[spell]) then
-                    logUntrackedMobSkillHit(spell, message, ability.Param, action.UserId, target.Id,
-                        debuffs ~= nil and debuffs[spell] ~= nil)
-                end
+            -- Pet abilities share the mob-skill ID namespace, so a known one never resolves
+            -- against the mob-skill tables here.
+            if (action.Type == 7 or action.Type == 11) and message == 0 and not isKnownPetAbility then
+                applyNoneMessageSkill(action, target, ability, now)
             end
 
             applyAdditionalEffect(action, target, ability, now)
@@ -774,75 +627,6 @@ statusTracker.HandleActionPacket = function(e)
     end
 end
 
--- Call once at plugin load and keep reference to table
-statusTracker.ReadPartyStatusFromMemory = function()
-    local p = AshitaCore:GetPointerManager():Get('party.statusicons');
-    if p == 0 then return {}; end
-    local ptrPartyStatus = ashita.memory.read_uint32(p);
-    local partyStatusTable = {};
-    for memberIndex = 0,4 do
-        local memberPtr = ptrPartyStatus + (0x30 * memberIndex);
-        local playerId = ashita.memory.read_uint32(memberPtr);
-        if (playerId ~= 0) then
-            local buffs = {};
-            local empty = false;
-            for buffIndex = 0,31 do
-                if empty then
-                    buffs[buffIndex + 1] = nil;
-                else
-                    local highBits = ashita.memory.read_uint8(memberPtr + 8 + (math.floor(buffIndex / 4)));
-                    local fMod = math.fmod(buffIndex, 4) * 2;
-                    highBits = bit.lshift(bit.band(bit.rshift(highBits, fMod), 0x03), 8);
-                    local lowBits = ashita.memory.read_uint8(memberPtr + 16 + buffIndex);
-                    local buff = highBits + lowBits;
-                    if buff == 255 then
-                        empty = true;
-                        buffs[buffIndex + 1] = nil;
-                    else
-                        buffs[buffIndex + 1] = buff;
-                    end
-                end
-            end
-            partyStatusTable[playerId] = buffs;
-        end
-    end
-    return partyStatusTable;
-end
-
-statusTracker.partyStatus = statusTracker.ReadPartyStatusFromMemory();
-
---Call with incoming packet 0x076
-statusTracker.HandlePartyUpdatePacket = function(e)
-    local partyStatusTable = {};
-    for i = 0,4 do
-        local memberOffset = 0x04 + (0x30 * i) + 1;
-        local memberId = struct.unpack('L', e.data, memberOffset);
-        if memberId > 0 then
-            local buffs = {};
-            local empty = false;
-            for j = 0,31 do
-                if empty then
-                    buffs[j + 1] = nil;
-                else
-                    --This is at offset 8 from member start.. memberoffset is using +1 for the lua struct.unpacks
-                    local highBits = bit.lshift(ashita.bits.unpack_be(e.data_raw, memberOffset + 7, j * 2, 2), 8);
-                    local lowBits = struct.unpack('B', e.data, memberOffset + 0x10 + j);
-                    local buff = highBits + lowBits;
-                    if (buff == 255) then
-                        buffs[j + 1] = nil;
-                        empty = true;
-                    else
-                        buffs[j + 1] = buff;
-                    end
-                end
-            end
-            partyStatusTable[memberId] = buffs;
-        end
-    end
-    statusTracker.partyStatus =  partyStatusTable;
-end
-
-
 statusTracker.HandleClearMessage = function(e)
 
     local parsedPacket = helpers.ParseMessagePacket(e.data)
@@ -850,28 +634,19 @@ statusTracker.HandleClearMessage = function(e)
         return;
     end
 
-        -- if we're tracking a mob that dies, reset its status
+    -- if we're tracking a mob that dies, reset its status
     if deathMes[parsedPacket.message] and statusTracker.trackedEntities[parsedPacket.target] then
-        statusTracker.trackedEntities[parsedPacket.target] = nil
-        bioDiaTiers[parsedPacket.target] = nil
-        displayIdOverrides[parsedPacket.target] = nil
-        moveBlockPositions[parsedPacket.target] = nil
-    elseif parsedPacket.message == WAKEUP_MES then
-        -- Mob woke up from damage. param is not a status ID here; clear all sleep-family IDs.
-        -- Sleep II is tracked under ID 19 (spellMeta buffId override), so clear both.
-        removeStatus(parsedPacket.target, 2)    -- Sleep I
-        removeStatus(parsedPacket.target, 19)   -- Sleep II (tracked as 19 via spellMeta buffId)
-        removeStatus(parsedPacket.target, 193)  -- Lullaby
+        clearTrackedShell(parsedPacket.target)
     elseif statusOffMes[parsedPacket.message] then
         -- Clear the buffid that just wore off.
         -- Sleep family (IDs 2, 19, 193) shares one wear-off message; clear all three
         -- so a Sleep I icon left from an earlier cast doesn't linger after Sleep II wears.
         if (parsedPacket.param ~= nil) then
             local p = parsedPacket.param;
-            if p == 2 or p == 19 or p == 193 then
-                removeStatus(parsedPacket.target, 2)
-                removeStatus(parsedPacket.target, 19)
-                removeStatus(parsedPacket.target, 193)
+            if SLEEP_FAMILY_STATUS_IDS[p] then
+                for sid in pairs(SLEEP_FAMILY_STATUS_IDS) do
+                    removeStatus(parsedPacket.target, sid)
+                end
             else
                 removeStatus(parsedPacket.target, p)
                 if p == 134 or p == 135 then
@@ -896,16 +671,11 @@ end
 
 statusTracker.GetStatusEffects = function(serverId)
     -- If this is just the player return the buffs in memory
-	if (serverId == AshitaCore:GetMemoryManager():GetParty():GetMemberServerId(0)) then
+    if (serverId == AshitaCore:GetMemoryManager():GetParty():GetMemberServerId(0)) then
         return FilterPlayerStatus(AshitaCore:GetMemoryManager():GetPlayer():GetBuffs());
     end
 
-    -- If this is a party member just return the party member
-    if (helpers.GetPartyMemberIds():contains(serverId)) then
-        return statusTracker.partyStatus[serverId];
-    end
-
-    -- Collect our manually tracked entities if it's neither of those
+    -- Otherwise collect our manually tracked entity
     if (statusTracker.trackedEntities[serverId] == nil) then
         return nil;
     end
@@ -920,17 +690,13 @@ statusTracker.GetStatusEffects = function(serverId)
     end
     -- Remove the entity shell when all its debuffs have expired to prevent unbounded growth
     if next(statusTracker.trackedEntities[serverId]) == nil then
-        statusTracker.trackedEntities[serverId] = nil;
-        displayIdOverrides[serverId] = nil;
-        moveBlockPositions[serverId] = nil;
+        clearTrackedShell(serverId);
     end
     return returnTable;
 end
 
--- Returns {[statusId] = expiryTime} for tracked entities, nil for self/unknown.
--- Party members fall through: HandleActionPacket populates trackedEntities for any target
--- that receives a status-on message, so debuffs (accurate duration) and buffs applied during
--- the session (300s fallback for unknown spells) will have timers; pre-existing buffs will not.
+-- Returns {[statusId] = expiryTime} for the tracked entity, nil for self/unknown. Statuses
+-- that landed before tracking began have no timer.
 -- Expiry times are absolute os.time() values; subtract os.time() at render to get remaining seconds.
 statusTracker.GetStatusTimes = function(serverId)
     if (serverId == AshitaCore:GetMemoryManager():GetParty():GetMemberServerId(0)) then
@@ -970,10 +736,7 @@ local function sweepExpiredEntities()
             end
         end
         if not anyActive then
-            statusTracker.trackedEntities[sid] = nil;
-            displayIdOverrides[sid] = nil;
-            bioDiaTiers[sid] = nil;
-            moveBlockPositions[sid] = nil;
+            clearTrackedShell(sid);
         end
     end
 end
@@ -1036,32 +799,33 @@ end
 -- Call every frame from d3d_present.
 statusTracker.Update = function()
     pollMoveBlockBreak(os.time())
-end
-
-statusTracker.GetRelevantTargets = function()
-    return statusTracker.relevantTargets;
+    sweepExpiredEntities()  -- time-gated inside
 end
 
 local STATE_FILE = nil
 
--- Saves non-expired tracked entity debuffs to disk so they survive addon reloads.
+-- Saves the tracked entity's non-expired statuses to disk so they survive addon reloads.
+-- With no tracked entity (pet not yet in range since load or zone) the file is left as is, so
+-- statuses restored at load survive another reload.
 statusTracker.SaveState = function()
+    if trackedId == 0 or STATE_FILE == nil then return end
     local now = os.time()
     local f = io.open(STATE_FILE, 'w')
     if not f then return end
     f:write('return {\n')
-    for sid, buffs in pairs(statusTracker.trackedEntities) do
-        local lines = {}
+    local buffs = statusTracker.trackedEntities[trackedId]
+    local lines = {}
+    if buffs then
         for statusId, expiry in pairs(buffs) do
             if expiry > now then
                 lines[#lines + 1] = string.format('    [%d]=%d,', statusId, expiry)
             end
         end
-        if #lines > 0 then
-            f:write(string.format('  [%d]={\n', sid))
-            for _, line in ipairs(lines) do f:write(line .. '\n') end
-            f:write('  },\n')
-        end
+    end
+    if #lines > 0 then
+        f:write(string.format('  [%d]={\n', trackedId))
+        for _, line in ipairs(lines) do f:write(line .. '\n') end
+        f:write('  },\n')
     end
     f:write('}\n')
     f:close()
@@ -1069,6 +833,7 @@ end
 
 -- Restores non-expired debuffs from the state file saved by a previous session.
 statusTracker.RestoreState = function()
+    if STATE_FILE == nil then return end
     local fn = loadfile(STATE_FILE)
     if not fn then return end
     local ok, data = pcall(fn)
@@ -1087,7 +852,7 @@ end
 
 
 -- Initialize the status tracker. Must be called before any packet processing.
--- @param opts  { addonPath = string, addonName = string, enableAuditLog = bool }
+-- @param opts  { addonPath = string, addonName = string }
 statusTracker.init = function(opts)
     spellDurations            = dofile(opts.addonPath .. 'libs/status/data/spellDurations.lua');
     abilityDurations          = dofile(opts.addonPath .. 'libs/status/data/abilityDurations.lua');
@@ -1105,9 +870,12 @@ statusTracker.init = function(opts)
     bloodPactDebuffs          = dofile(opts.addonPath .. 'libs/status/data/bloodPactDebuffs.lua');
     wardBuffDurations         = dofile(opts.addonPath .. 'libs/status/data/wardBuffDurations.lua');
 
-    if opts.enableAuditLog ~= false then
-        UNKNOWN_BUFF_LOG = AshitaCore:GetInstallPath() .. 'config/addons/' .. opts.addonName .. '/unknownDurations.log'
-        STATUS_AUDIT_LOG = AshitaCore:GetInstallPath() .. 'config/addons/' .. opts.addonName .. '/statusAudit.log'
+    baseStatusIds = {}
+    for _, d in pairs(bioDiaData) do
+        if d.displayId then baseStatusIds[d.displayId] = d.statusId end
+    end
+    for _, m in pairs(spellMeta) do
+        if m.displayId then baseStatusIds[m.displayId] = m.statusId end
     end
 
     STATE_FILE = AshitaCore:GetInstallPath() .. 'config/addons/' .. opts.addonName .. '/statusstate.dat'
@@ -1115,12 +883,14 @@ statusTracker.init = function(opts)
     statusTracker.RestoreState()
 end
 
--- Clear all tracked status effects for a specific entity.
-statusTracker.clearEntity = function(serverId)
-    statusTracker.trackedEntities[serverId] = nil
-    bioDiaTiers[serverId] = nil
-    displayIdOverrides[serverId] = nil
-    moveBlockPositions[serverId] = nil
+-- Sets the one entity whose statuses are tracked (0 = none) and drops every other shell.
+statusTracker.setTrackedEntity = function(serverId)
+    trackedId = serverId
+    for sid in pairs(statusTracker.trackedEntities) do
+        if sid ~= serverId then
+            clearTrackedShell(sid)
+        end
+    end
 end
 
 -- Tears down this module's registered event handler. Call from the addon's unload event.
@@ -1128,14 +898,10 @@ statusTracker.Dispose = function()
     ashita.events.unregister('packet_in', '__status_packet_in_cb');
 end
 
--- The usual packet event doesn't register in libs but this __settings one does. Feels bad.
 ashita.events.register('packet_in', '__status_packet_in_cb', function (e)
 
-    if (e.id == 0x076) then
-        statusTracker.HandlePartyUpdatePacket(e);
-    elseif (e.id == 0x00A) then -- Clear everything on zone
+    if (e.id == 0x00A) then -- Clear everything on zone
         statusTracker.trackedEntities = T{};
-        statusTracker.relevantTargets = T{};
         bioDiaTiers = {};
         displayIdOverrides = {};
         moveBlockPositions = {};
@@ -1143,9 +909,6 @@ ashita.events.register('packet_in', '__status_packet_in_cb', function (e)
         statusTracker.HandleClearMessage(e);
     elseif (e.id == 0x0028) then
         statusTracker.HandleActionPacket(e);
-    elseif (e.id == 0x00E) then
-        statusTracker.HandleMobUpdatePacket(e);
-        sweepExpiredEntities();  -- periodic cleanup of stale entity shells (time-gated inside)
     end
 end);
 

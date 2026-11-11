@@ -4,9 +4,11 @@
 -- Uses uiImage for icons (file-path based, auto-scaled from actual texture dims).
 -- Uses gdifonts directly for timer labels below each icon.
 
+local chat    = require('chat')
 local gdi     = require('libs/gdifonts/include')
 local uiImage = require('libs/spui/uiImage')
 local Utils   = require('utils')
+local status  = require('libs/status/status')
 
 local SE = {}
 
@@ -24,21 +26,20 @@ local poolSize    = 0
 local timerLabels = {}   -- [1..poolSize] = fontObj or nil (nil when no timer layout)
 
 -- Hit-test state
-local statusAtSlot = {}  -- [1..poolSize] = statusId or nil
+local statusAtSlot = {}  -- [1..poolSize] = real status ID (tier display IDs resolved) or nil
 local shownCount   = 0   -- how many slots are currently active
 
 -- Current anchor (top-left of the strip area in screen space)
 local anchorX = 0
 local anchorY = 0
 
--- Missing icon audit
-local logPath      = nil   -- set in initialize(); nil = no logging
+-- Missing icon reporting
 local onMissing    = nil   -- optional callback(statusId, path) for verbose chat
-local loggedMissing = {}   -- [statusId] = true; prevents duplicate log entries
+local loggedMissing = {}   -- [statusId] = true; prevents duplicate reports
 
--- Icon path cache: existence of an icon file never changes during a session,
--- so resolve (and ashita.fs.exists-check) each statusId only once.
+-- Icon path cache: each statusId is resolved (and ashita.fs.exists-checked) once per initialize.
 local iconPathCache = {}   -- [statusId] = resolved path string, or '' when missing
+local iconDir       = ''   -- 'libs/status/icons/<iconSet>/'
 
 -- fakeParent: provides absolutePos and absoluteScale for uiImage layoutElement()
 local fakeParent = {
@@ -102,8 +103,7 @@ end
 -- @param layoutTable the full layout table (reads layoutTable.petFrame.statusEffects)
 -- @param ax, ay      initial anchor position (strip top-left in screen space)
 -- @param scale       UI scale (resY / 1440)
--- @param opts        optional table: { addonName=string, onMissing=fn(id,path) }
---                    addonName builds the audit log path under config/addons/<name>/
+-- @param opts        optional table: { onMissing=fn(id,path) }
 --                    onMissing is called once per missing ID (use for verbose chat output)
 function SE.initialize(eng, layoutTable, ax, ay, scale, opts)
     engine  = eng
@@ -114,13 +114,14 @@ function SE.initialize(eng, layoutTable, ax, ay, scale, opts)
     if not layout then return end
 
     loggedMissing = {}
-    if opts and opts.addonName then
-        logPath   = AshitaCore:GetInstallPath() .. 'config/addons/' .. opts.addonName .. '/missingIcons.log'
-        onMissing = opts.onMissing or nil
-    else
-        logPath   = nil
-        onMissing = nil
+    iconPathCache = {}
+    onMissing = opts and opts.onMissing or nil
+    local iconSet = layout.iconSet or 'XIView'
+    if type(iconSet) ~= 'string' or not ashita.fs.exists(string.format('%slibs/status/icons/%s', addon.path, iconSet)) then
+        print(chat.header(addon.name) .. chat.warning(string.format('Icon set "%s" not found in libs/status/icons/; using XIView.', tostring(iconSet))))
+        iconSet = 'XIView'
     end
+    iconDir = string.format('libs/status/icons/%s/', iconSet)
 
     fakeParent.absoluteScale.x = uiScale
     fakeParent.absoluteScale.y = uiScale
@@ -166,8 +167,8 @@ end
 
 -- Update icon display and timer labels from the current token table.
 -- Call every frame from petFrame.update().
--- Visibility controlled by layout.bind.visible token (default: 'pet.active').
--- layout.hideWhenEmpty token: when true, hide the strip if no effects are active.
+-- Visibility controlled by the layout.bind.visible and bind.visibleAnd tokens; the strip is
+-- hidden while the pet has no status IDs.
 function SE.update(tokens)
     if not layout or poolSize == 0 then return end
 
@@ -211,18 +212,10 @@ function SE.update(tokens)
         local iconFile = iconPathCache[statusId]
         if iconFile == nil then
             -- First encounter of this statusId: resolve once, cache for the session.
-            iconFile = 'libs/status/icons/XIView/' .. statusId .. '.png'
+            iconFile = string.format('%s%d.png', iconDir, statusId)
             if not ashita.fs.exists(addon.path .. iconFile) then
                 if not loggedMissing[statusId] then
                     loggedMissing[statusId] = true
-                    if logPath then
-                        local f = io.open(logPath, 'a')
-                        if f then
-                            f:write(string.format('[%s] missing icon: statusId=%d path=%s\n',
-                                os.date('%Y-%m-%d %H:%M:%S'), statusId, iconFile))
-                            f:close()
-                        end
-                    end
                     if onMissing then onMissing(statusId, iconFile) end
                 end
                 iconFile = ''   -- blank path → uiImage renders nothing
@@ -233,7 +226,7 @@ function SE.update(tokens)
         img:path(iconFile)
         img:show(VIS_TOKEN)
         img:update()
-        statusAtSlot[shown] = statusId
+        statusAtSlot[shown] = status.GetBaseStatusId(statusId)
 
         -- Timer label (GDI, absolute screen-space coordinates)
         if timerLabels[shown] and timerLayout then
@@ -266,7 +259,8 @@ function SE.setAnchor(ax, ay)
     anchorY = ay
 end
 
--- Returns the statusId under screen position (mx, my), or nil.
+-- Returns the real status ID under screen position (mx, my), or nil. Tier display IDs (814+)
+-- resolve to their base status, so resource lookups by the result find the status name.
 -- Uses absolutePos/Width/Height set by uiImage:layoutElement() — no allocations.
 function SE.getStatusAtPosition(mx, my)
     if not layout then return nil end
@@ -284,22 +278,6 @@ function SE.getStatusAtPosition(mx, my)
         end
     end
     return nil
-end
-
--- Returns the pixel height of the icon strip content (icons + timers + margin).
--- Does NOT include pos offset — that is baked into the anchor by petFrame.
-function SE.stripHeight()
-    if not layout or poolSize == 0 then return 0 end
-    local iconH    = math.floor((layout.iconSize or 18) * uiScale)
-    local marginB  = math.floor((layout.marginBottom or 4) * uiScale)
-    local timerExt = 0
-    if layout.timer then
-        local timerOffY  = math.floor(((layout.timer.pos and layout.timer.pos[2]) or 0) * uiScale)
-        local timerFontH = math.floor((layout.timer.size or 8) * uiScale)
-        local timerBase  = timerOffY + timerFontH
-        timerExt = math.max(0, timerBase - iconH)
-    end
-    return iconH + timerExt + marginB
 end
 
 -- Destroy all image instances and font objects.

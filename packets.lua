@@ -1,6 +1,8 @@
 -- packets.lua
--- Packet ID constants, pure parse functions, and dispatch handler.
--- Parse functions are pure (no side effects). Callers update State.
+-- Packet ID constants, pure parsers (packets._parse*), and the packet_in/packet_out handlers.
+-- The handlers drive the charm /check state machine (State.charmCheck) and apply parsed packets
+-- to State through its transition functions;
+-- the parsers have no side effects.
 
 local packets   = {}
 local socket    = require('socket')
@@ -13,6 +15,7 @@ packets.ID = {
     ACTION      = 0x0028,   -- Actions (attacks, magic, weapon skills)
     CHECK_IN    = 0x0029,   -- Check (/check command response from server)
     ZONE_IN     = 0x000A,   -- Zone-in event
+    ZONE_OUT    = 0x000B,   -- Zone-out event (handled in PetsReborn.lua)
     ACTION_OUT  = 0x001A,   -- Outgoing action packet (JA/WS/spell use)
     CHECK_OUT   = 0x00DD,   -- Outgoing check packet (/check command)
     ENTITY_SYNC = 0x0067,   -- Entity update; mode 4 carries the local client's pet
@@ -73,7 +76,7 @@ local CALL_BEAST_ABILITY      = 0x55    -- Call Beast      (85)
 local BESTIAL_LOYALTY_ABILITY = 0x183   -- Bestial Loyalty (387)
 
 -- Stat index constants
-local CHR_STAT_INDEX = 6     -- CHR stat index in GetStat()
+local CHR_STAT_INDEX = 6     -- CHR stat index in GetStat()/GetStatModifier()
 
 -- 2-hour effect durations (seconds)
 local FAMILIAR_DURATION = 1800   -- 30 minutes (matches HorizonXI server)
@@ -82,10 +85,28 @@ local SS_DURATION       = 60     -- 1 minute (matches HorizonXI server)
 local OD_DURATION       = 60     -- 1 minute (matches HorizonXI server)
 
 
--- Charm check state machine (nil, 'sending', 'waiting')
-local charmCheckState       = nil
-local pendingCharmTarget    = nil   -- target server ID from outgoing Charm action
-local pendingCharmTargetIdx = nil   -- target entity index from outgoing Charm action
+-- A queued /check that never goes out, or a reply that never arrives, abandons the check after
+-- this long, so a later manual /check is neither redirected nor taken as the charm answer.
+local CHARM_CHECK_TIMEOUT = 5
+
+-- 0x0029 check reply (LSB 0x0dd_equip_inspect.cpp): MessageNum is 174 +/- 1 (defense)
+-- +/- 3 (evasion), Data is the mob level, Data2 is 64 + difficulty (0-7).
+-- Impossible-to-gauge targets get message 249 with no level.
+local MSG_CHECK_MIN          = 170
+local MSG_CHECK_MAX          = 178
+local MSG_CHECK_IMPOSSIBLE   = 249
+local CHECK_DIFFICULTY_MIN   = 0x40
+local CHECK_DIFFICULTY_MAX   = 0x47
+
+-- Returns the charm check state (State.charmCheck.state), abandoning it first once it has
+-- timed out.
+local function currentCharmCheck(State)
+    local check = State.charmCheck
+    if check.state ~= nil and socket.gettime() - check.started > CHARM_CHECK_TIMEOUT then
+        State.clearCharmCheck()
+    end
+    return check.state
+end
 
 
 -- Calculates charm duration in seconds using the LSB server formula.
@@ -123,313 +144,352 @@ function packets._calcCharmDuration(mobLevel, chr, playerLvl, gearMod)
     return math.floor(duration)
 end
 
+---------------------------------------------------------------------------
+-- Outgoing handlers: (e, State)
+---------------------------------------------------------------------------
+
+-- 0x001A: a Charm use queues a /check so the reply can size the charm timer.
+local function onActionOut(e, State)
+    local data = e.data
+    if not data or #data < 16 then return end
+
+    local category, abilityId, target, targetIdx
+    local ok = pcall(function()
+        target    = struct.unpack('I', data, 0x04 + 1)
+        targetIdx = struct.unpack('H', data, 0x08 + 1)
+        category  = struct.unpack('H', data, 0x0A + 1)
+        abilityId = struct.unpack('H', data, 0x0C + 1)
+    end)
+    if not ok then return end
+
+    -- Charm: JA category 9, ability 0x34; only trigger when no pet is active.
+    -- Familiar and Astral Flow are confirmed via the incoming 0x0028 action packet
+    -- to avoid starting the timer when the server rejects the ability.
+    if category == JA_CATEGORY and abilityId == CHARM_ABILITY and not State.active then
+        local check = State.charmCheck
+        check.target    = target
+        check.targetIdx = targetIdx
+        check.state     = 'sending'
+        check.started   = socket.gettime()
+        AshitaCore:GetChatManager():QueueCommand(1, '/check')
+    end
+end
+
+-- 0x00DD: redirects the queued /check to the charm target.
+local function onCheckOut(e, State)
+    if currentCharmCheck(State) ~= 'sending' then return end
+
+    local data = e.data
+    if not data then return end
+
+    -- Substitute charm target into the /check packet.
+    -- Packet layout (0-based offsets, 1-indexed in struct):
+    --   bytes 0-3: header (unchanged)
+    --   uint32 at offset 4: target server ID (UniqueNo)
+    --   uint32 at offset 8: target entity index (ActIndex) -- full 32-bit field in this packet,
+    --                       unlike 0x001A where ActIndex is only 16 bits
+    --   remaining bytes: unchanged
+    local check = State.charmCheck
+    local target, targetIdx = check.target, check.targetIdx
+    local pkt = data:totable()
+    local ok = pcall(function()
+        pkt[5] = bit.band(target,    0xFF)
+        pkt[6] = bit.band(bit.rshift(target,    8), 0xFF)
+        pkt[7] = bit.band(bit.rshift(target,    16), 0xFF)
+        pkt[8] = bit.band(bit.rshift(target,    24), 0xFF)
+        pkt[9] = bit.band(targetIdx, 0xFF)
+        pkt[10]= bit.band(bit.rshift(targetIdx, 8), 0xFF)
+        pkt[11]= 0
+        pkt[12]= 0
+    end)
+    if ok then
+        e.data_modified = pkt
+    end
+    check.state = 'waiting'
+end
+
+---------------------------------------------------------------------------
+-- Incoming handlers: (e, State)
+---------------------------------------------------------------------------
+
+-- 0x000A: zone transition clears pet state to avoid a stale display.
+local function onZoneIn(_, State)
+    State.onZone()
+    -- Maneuver burden and the Overload countdown survive the zone, the same way the jug
+    -- clock does. Zoning marks the automaton Status::Disappear but the server keeps the
+    -- entity and its burden array (zone_entities.cpp:519), so clearing here under-reports.
+    -- Both live inside State.automaton.burdenModel, which State.onZone() does not touch --
+    -- only a confirmed Activate reseeds them.
+end
+
+-- 0x0067/0x0068: the pet's target, straight from the server. Entity memory's GetTargetedIndex
+-- is documented "not always populated" and reads 0 for pets in practice -- see data.lua's
+-- target block.
+local function onPetSync(e, State)
+    local parsed = packets._parsePetSync(e.data)
+    if parsed then
+        State.target.pktServerId = parsed.targetServerId
+    end
+end
+
+-- 0x0044: the only source of the automaton's HP/MP figures and pool sizes.
+-- The memory manager exposes percentages only, and GetPetMPPercent reports 0 for a frame
+-- with no pool and for a drained caster alike.
+local function onExtJob(e, State)
+    local parsed = packets._parseExtJobPup(e.data)
+    if not parsed then return end
+
+    local a = State.automaton
+    a.hp    = parsed.hp
+    a.maxHp = parsed.maxHp
+    a.mp    = parsed.mp
+    a.maxMp = parsed.maxMp
+    -- Sets the burden decay rate. Re-sent whenever the automaton's updatemask
+    -- changes, so an attachment swap lands without a reload.
+    a.heatsink = parsed.heatsink
+    -- Head, frame and attachments are the only source for the internal cooldown rows:
+    -- nothing in client memory exposes what the automaton is wearing.
+    automatonIcd.setEquipment(parsed.head, parsed.frame, parsed.attachments)
+end
+
+-- 0x0029: the charm target's check reply carries its level, which sizes the charm timer.
+local function onCheckIn(e, State)
+    if currentCharmCheck(State) ~= 'waiting' then return end
+
+    local data = e.data
+    if not data or #data < 28 then return end
+
+    local targetId, param1, param2, msg
+    local ok = pcall(function()
+        targetId = struct.unpack('I', data, 0x08 + 1)   -- uint32: UniqueNoTar
+        param1   = struct.unpack('l', data, 0x0C + 1)   -- signed int32: mob level
+        param2   = struct.unpack('L', data, 0x10 + 1)   -- uint32: 64 + difficulty
+        msg      = struct.unpack('H', data, 0x18 + 1)   -- uint16: message type
+    end)
+    if not ok then return end
+
+    -- 0x0029 carries every battle message; anything that is not this target's check reply
+    -- leaves the check waiting.
+    if targetId ~= State.charmCheck.target then return end
+    if msg == MSG_CHECK_IMPOSSIBLE then
+        State.clearCharmCheck()
+        return
+    end
+    if msg < MSG_CHECK_MIN or msg > MSG_CHECK_MAX
+        or param2 < CHECK_DIFFICULTY_MIN or param2 > CHECK_DIFFICULTY_MAX then
+        return
+    end
+    State.clearCharmCheck()
+
+    local memMgr = AshitaCore and AshitaCore:GetMemoryManager()
+    if not memMgr then return end
+    local player = memMgr:GetPlayer()
+    if not player then return end
+
+    local chr     = player:GetStat(CHR_STAT_INDEX) + player:GetStatModifier(CHR_STAT_INDEX)
+    local plvl    = player:GetMainJobLevel()
+    local gearMod = dataLib.getCharmGearBonus()
+    local duration = packets._calcCharmDuration(param1, chr, plvl, gearMod)
+
+    State.startCharm(param1, duration, targetId)
+end
+
+---------------------------------------------------------------------------
+-- 0x0028 action: the player's confirmed abilities and the automaton's own actions
+---------------------------------------------------------------------------
+
+-- The automaton's casts and mob skills drive its internal cooldowns.
+local function onAutomatonAction(data)
+    local petAction = packets._parseAutomatonAction(data)
+    if petAction == nil then return end
+    if petAction.kind == 'cast' then
+        automatonIcd.onCast(petAction.id, socket.gettime())
+    else
+        automatonIcd.onMobSkill(petAction.id, socket.gettime())
+    end
+end
+
+-- Ability Finish handlers keyed by ability id; each runs only once the server confirms the
+-- ability fired.
+local abilityFinishHandlers = {
+    [STAY_ABILITY] = function(State)
+        if State.bst.stayExpiry == nil then
+            State.bst.stayExpiry = socket.gettime() + 20
+        end
+    end,
+
+    [HEEL_ABILITY] = function(State)
+        State.bst.stayExpiry = nil
+    end,
+
+    -- Leave dismisses the pet outright, so the jug, charm and Familiar clocks and Stay end
+    -- with it. (Heel only recalls the pet -- the clock keeps running there.)
+    [LEAVE_ABILITY] = function(State)
+        State.onLeave()
+    end,
+
+    -- BST 2hr.
+    [FAMILIAR_ABILITY] = function(State)
+        State.startFamiliar(FAMILIAR_DURATION)
+    end,
+
+    -- SMN 2hr.
+    [ASTRAL_FLOW_ABILITY] = function(State)
+        State.avatar.afExpireTime = os.time() + AF_DURATION
+        State.avatar.afRemaining  = AF_DURATION
+    end,
+
+    -- DRG 2hr.
+    [SPIRIT_SURGE_ABILITY] = function(State)
+        State.wyvern.ssExpireTime = os.time() + SS_DURATION
+        State.wyvern.ssRemaining  = SS_DURATION
+    end,
+
+    -- PUP 2hr.
+    [OVERDRIVE_ABILITY] = function(State)
+        State.automaton.odExpireTime = os.time() + OD_DURATION
+        State.automaton.odRemaining  = OD_DURATION
+    end,
+}
+
+-- A confirmed summon is the only thing that starts a jug clock, so a stale clock left by an
+-- unobserved release -- player KO, job change, pet dying out of sight -- is overwritten, not
+-- inherited by the new pet.
+local function onJugSummon(State)
+    State.jug.pendingCall = true
+end
+abilityFinishHandlers[CALL_BEAST_ABILITY]      = onJugSummon
+abilityFinishHandlers[BESTIAL_LOYALTY_ABILITY] = onJugSummon
+
+-- Stamps one maneuver's burden from its action result. The server volunteers the exact
+-- overload chance in the result, so nothing here computes one.
+local function stampManeuverBurden(burdenModel, element, data, cmdNo, abilityId)
+    local result = packets._parseActionResult(data)
+    -- Cross-check the bitstream reader against the uint16 shortcut: wrong offsets yield
+    -- plausible garbage rather than an error, so every percentage would render as a
+    -- meaningless number. The shortcut's abilityId is only the low 10 bits of cmd_arg and
+    -- must be masked. Both compared fields live in stream bits 10-23, so this verifies
+    -- alignment only through cmd_arg bit 9 -- not the cmd_arg width above that, nor the
+    -- target/result skips, which rest on the field widths in _parseActionResult.
+    if not result or result.cmdNo ~= cmdNo or bit.band(result.abilityId, 0x3FF) ~= abilityId then
+        return
+    end
+
+    if result.message == maneuvers.MSG_OVERLOADED then
+        burdenModel.stamp(element.index, result.param)
+        burdenModel.setOverload(result.param, os.time())
+    elseif result.message == maneuvers.MSG_OVERLOAD_CHANCE then
+        -- Taken at face value, Overdrive included. OVERLOAD_THRESH +5000 clamps the reported
+        -- chance to 0 for the whole of an Overdrive while burden keeps climbing, so the column
+        -- reads clean through that window and re-anchors on the first report after it drops.
+        burdenModel.stamp(element.index, result.param)
+    end
+end
+
+-- PUP maneuver burden: maneuvers stamp it, Activate and Deus Ex Automata reseed it.
+-- Dot calls only: a colon passes the model itself as `index`, which reads back nil and
+-- renders every percentage 0 forever, with no error.
+local function onBurdenAbility(State, data, cmdNo, abilityId)
+    local burdenModel = State.automaton and State.automaton.burdenModel
+    if not burdenModel then return end
+
+    local element = maneuvers.byAbilityId[abilityId]
+    if element then
+        stampManeuverBurden(burdenModel, element, data, cmdNo, abilityId)
+    elseif abilityId == maneuvers.ACTIVATE_ABILITY then
+        -- A fresh automaton spawns with burden in every element, not at 0, so the baseline is
+        -- SPAWN_PCT. Overload is not cleared here: the Overload buff is the authority and it
+        -- outlives the automaton, so data.lua reconciles it.
+        burdenModel.resetAll(burdenModel.SPAWN_PCT)
+    elseif abilityId == maneuvers.DEA_ABILITY then
+        -- Without this the model inherits the dead automaton's stamps and every element reads
+        -- 0 while sitting one maneuver away from a near-certain Overload.
+        burdenModel.resetAll(burdenModel.DEA_SPAWN_PCT)
+    end
+end
+
+-- The player's own action: BST pet commands, 2hr timers, jug summons, automaton summons and
+-- maneuver burden.
+local function onPlayerAction(data, State)
+    local cmdParsed = packets._parseActionCommand(data)
+    local cmdNo     = cmdParsed and cmdParsed.cmdNo
+    local abilityId = cmdParsed and cmdParsed.abilityId
+    -- Only check ability IDs for Ability Finish (cmd_no 6).
+    -- Without this guard, spells (cmd_no 4/8) can produce false matches
+    -- against JA ability IDs via their spell IDs sharing the same lower bits.
+    if not abilityId or cmdNo ~= 6 then return end
+
+    local handler = abilityFinishHandlers[abilityId]
+    if handler then
+        handler(State)
+    end
+
+    -- The new automaton's internal cooldowns all start clear, so the old
+    -- one's stamps must not outlive it.
+    if abilityId == maneuvers.ACTIVATE_ABILITY or abilityId == maneuvers.DEA_ABILITY then
+        automatonIcd.onSummonConfirmed()
+    end
+
+    onBurdenAbility(State, data, cmdNo, abilityId)
+end
+
+local function playerServerId()
+    local memMgr = AshitaCore and AshitaCore:GetMemoryManager()
+    local party  = memMgr and memMgr:GetParty()
+    return party and party:GetMemberServerId(0) or 0
+end
+
+local function onAction(e, State)
+    local data = e.data
+    if not data then return end
+
+    local parsed  = packets._parseAction(data)
+    local actorId = parsed and parsed.actorId
+    if actorId and actorId ~= 0 then
+        if State.petType == 'automaton' and State.active and actorId == State.serverId then
+            onAutomatonAction(data)
+        end
+        local playerId = playerServerId()
+        if playerId ~= 0 and actorId == playerId then
+            onPlayerAction(data, State)
+        end
+    end
+end
+
+local outHandlers = {
+    [packets.ID.ACTION_OUT] = onActionOut,
+    [packets.ID.CHECK_OUT]  = onCheckOut,
+}
+
+local inHandlers = {
+    [packets.ID.ZONE_IN]     = onZoneIn,
+    [packets.ID.ENTITY_SYNC] = onPetSync,
+    [packets.ID.PET_SYNC]    = onPetSync,
+    [packets.ID.EXT_JOB]     = onExtJob,
+    [packets.ID.CHECK_IN]    = onCheckIn,
+    [packets.ID.ACTION]      = onAction,
+}
+
 -- Called for every outgoing packet. Handles charm /check interception.
 -- @param e      Ashita packet_out event
 -- @param State  the shared state table
 function packets.handlePacketOut(e, State)
     if not e or not e.id then return end
-
-    -- Detect Charm job ability being used
-    if e.id == packets.ID.ACTION_OUT then
-        local data = e.data
-        if not data or #data < 16 then return end
-
-        local category, abilityId, target, targetIdx
-        local ok = pcall(function()
-            target    = struct.unpack('I', data, 0x04 + 1)
-            targetIdx = struct.unpack('H', data, 0x08 + 1)
-            category  = struct.unpack('H', data, 0x0A + 1)
-            abilityId = struct.unpack('H', data, 0x0C + 1)
-        end)
-        if not ok then return end
-
-        if category == JA_CATEGORY then
-            -- Charm: JA category 9, ability 0x34; only trigger when no pet is active
-            if abilityId == CHARM_ABILITY and not State.active then
-                pendingCharmTarget    = target
-                pendingCharmTargetIdx = targetIdx
-                charmCheckState       = 'sending'
-                AshitaCore:GetChatManager():QueueCommand(1, '/check')
-            end
-            -- Familiar and Astral Flow are confirmed via the incoming 0x0028 action packet
-            -- to avoid starting the timer when the server rejects the ability.
-        end
-        return
-    end
-
-    -- Intercept /check and redirect it to the charm target
-    if e.id == packets.ID.CHECK_OUT then
-        if charmCheckState ~= 'sending' then return end
-
-        local data = e.data
-        if not data then return end
-
-        -- Substitute charm target into the /check packet.
-        -- Packet layout (0-based offsets, 1-indexed in struct):
-        --   bytes 0-3: header (unchanged)
-        --   uint32 at offset 4: target server ID (UniqueNo)
-        --   uint32 at offset 8: target entity index (ActIndex) -- full 32-bit field in this packet,
-        --                       unlike 0x001A where ActIndex is only 16 bits
-        --   remaining bytes: unchanged
-        local pkt = data:totable()
-        local ok = pcall(function()
-            pkt[5] = bit.band(pendingCharmTarget,    0xFF)
-            pkt[6] = bit.band(bit.rshift(pendingCharmTarget,    8), 0xFF)
-            pkt[7] = bit.band(bit.rshift(pendingCharmTarget,    16), 0xFF)
-            pkt[8] = bit.band(bit.rshift(pendingCharmTarget,    24), 0xFF)
-            pkt[9] = bit.band(pendingCharmTargetIdx, 0xFF)
-            pkt[10]= bit.band(bit.rshift(pendingCharmTargetIdx, 8), 0xFF)
-            pkt[11]= 0
-            pkt[12]= 0
-        end)
-        if ok then
-            e.data_modified = pkt
-        end
-        charmCheckState = 'waiting'
-        return
+    local handler = outHandlers[e.id]
+    if handler then
+        handler(e, State)
     end
 end
 
 -- Called for every incoming packet. Updates State as appropriate.
--- @param e       Ashita packet event (contains .id, .data_modified_shifted, etc.)
+-- @param e       Ashita packet_in event (.id, .data, ...)
 -- @param State   the shared state table
--- @param activeModule  the currently active type module (may be nil)
-function packets.handlePacketIn(e, State, activeModule)
+function packets.handlePacketIn(e, State)
     if not e or not e.id then return end
-
-    if e.id == packets.ID.ZONE_IN then
-        -- Zone transition: clear pet state to avoid stale display
-        State.reset()
-        -- Maneuver burden and the Overload countdown survive the zone, the same way the jug
-        -- clock does. Zoning marks the automaton Status::Disappear but the server keeps the
-        -- entity and its burden array (zone_entities.cpp:519), so clearing here under-reports.
-        -- Both live inside State.automaton.burdenModel, which State.reset() does not touch --
-        -- only a confirmed Activate reseeds them.
-        -- Forward to active module for cleanup
-        if activeModule and activeModule.onPacket then
-            activeModule.onPacket(e)
-        end
-        return
+    local handler = inHandlers[e.id]
+    if handler then
+        handler(e, State)
     end
-
-    -- Pet sync: the pet's target, straight from the server. Entity memory's GetTargetedIndex
-    -- is documented "not always populated" and reads 0 for pets in practice -- see data.lua's
-    -- target block.
-    if e.id == packets.ID.PET_SYNC or e.id == packets.ID.ENTITY_SYNC then
-        local parsed = packets._parsePetSync(e.data)
-        if parsed then
-            State.target.pktServerId = parsed.targetServerId
-        end
-        return
-    end
-
-    -- Extended job data: the only source of the automaton's HP/MP figures and pool sizes.
-    -- The memory manager exposes percentages only, and GetPetMPPercent reports 0 for a frame
-    -- with no pool and for a drained caster alike.
-    if e.id == packets.ID.EXT_JOB then
-        local parsed = packets._parseExtJobPup(e.data)
-        if parsed then
-            local a = State.automaton
-            a.hp    = parsed.hp
-            a.maxHp = parsed.maxHp
-            a.mp    = parsed.mp
-            a.maxMp = parsed.maxMp
-            -- Sets the burden decay rate. Re-sent whenever the automaton's updatemask
-            -- changes, so an attachment swap lands without a reload.
-            a.heatsink = parsed.heatsink
-            -- Head, frame and attachments are the only source for the internal cooldown rows:
-            -- nothing in client memory exposes what the automaton is wearing.
-            automatonIcd.setEquipment(parsed.head, parsed.frame, parsed.attachments)
-        end
-        return
-    end
-
-    -- Check response: extract mob level and calculate charm duration
-    if e.id == packets.ID.CHECK_IN then
-        if charmCheckState ~= 'waiting' then return end
-        charmCheckState = nil   -- consume regardless of validity
-
-        local data = e.data
-        if not data or #data < 28 then return end
-
-        local param1, param2, msg
-        local ok = pcall(function()
-            param1 = struct.unpack('l', data, 0x0C + 1)   -- signed int32: mob level
-            param2 = struct.unpack('L', data, 0x10 + 1)   -- uint32: level range flag
-            msg    = struct.unpack('H', data, 0x18 + 1)   -- uint16: message type
-        end)
-        if not ok then return end
-
-        -- Validate this is a real level-check response (filters out non-combat checks)
-        -- msg 0xAA-0xB2: "Target's level is X" messages
-        -- param2 0x40-0x47: level range indicators
-        local valid = (msg >= 0xAA and msg <= 0xB2) or (param2 >= 0x40 and param2 <= 0x47)
-        if not valid then return end
-
-        local memMgr = AshitaCore and AshitaCore:GetMemoryManager()
-        if not memMgr then return end
-        local player = memMgr:GetPlayer()
-        if not player then return end
-
-        local chr     = player:GetStat(CHR_STAT_INDEX)
-        local plvl    = player:GetMainJobLevel()
-        local gearMod = dataLib.getCharmGearBonus()
-        local duration = packets._calcCharmDuration(param1, chr, plvl, gearMod)
-
-        State.charm.mobLevel      = param1
-        State.charm.expireTime    = os.time() + duration
-        State.charm.totalDuration = duration
-        State.charm.known         = true
-        return
-    end
-
-    if e.id == packets.ID.ACTION then
-        local data = e.data
-        if not data then return end
-
-        -- Parse action for actor ID (needed for BST command / 2hr tracking below)
-        local parsed = packets._parseAction(data)
-
-        -- The automaton's own actions drive its internal cooldowns.
-        if parsed and parsed.actorId ~= 0 and State.petType == 'automaton'
-            and State.active and parsed.actorId == State.serverId then
-            local petAction = packets._parseAutomatonAction(data)
-            if petAction ~= nil then
-                if petAction.kind == 'cast' then
-                    automatonIcd.onCast(petAction.id, socket.gettime())
-                else
-                    automatonIcd.onMobSkill(petAction.id, socket.gettime())
-                end
-            end
-        end
-
-        -- BST pet commands: only trigger when server confirms the ability fired
-        -- Extract cmd_no and abilityId from 0x0028 bitstream (layout per XiPackets/0x0028/Reversing.md):
-        --   Bitstream starts at byte 0x09 (after 32-bit actor ID at 0x05):
-        --     bits 0-5:  trg_sum  (6 bits)
-        --     bits 6-9:  res_sum  (4 bits)
-        --     bits 10-13: cmd_no  (4 bits) <- 6 = Ability Finish
-        --     bits 14-45: cmd_arg (32 bits) <- ability ID for cmd_no 6
-        --   Reading uint16 at 0x0A covers stream bits 8-23:
-        --     bits 0-1 of uint16 = res_sum bits 2-3
-        --     bits 2-5 of uint16 = cmd_no  -> rshift(w,2) & 0xF
-        --     bits 6-15 of uint16 = cmd_arg bits 0-9 -> rshift(w,6)
-        if parsed and parsed.actorId ~= 0 then
-            local memMgr = AshitaCore and AshitaCore:GetMemoryManager()
-            local party  = memMgr and memMgr:GetParty()
-            local playerServerId = party and party:GetMemberServerId(0) or 0
-            if playerServerId ~= 0 and parsed.actorId == playerServerId then
-                local cmdParsed = packets._parseActionCommand(data)
-                local cmdNo     = cmdParsed and cmdParsed.cmdNo
-                local abilityId = cmdParsed and cmdParsed.abilityId
-                -- Only check ability IDs for Ability Finish (cmd_no 6).
-                -- Without this guard, spells (cmd_no 4/8) can produce false matches
-                -- against JA ability IDs via their spell IDs sharing the same lower bits.
-                if abilityId and cmdNo == 6 then
-                    if abilityId == STAY_ABILITY then
-                        if State.bst.stayExpiry == nil then
-                            State.bst.stayExpiry = socket.gettime() + 20
-                        end
-                    elseif abilityId == HEEL_ABILITY then
-                        State.bst.stayExpiry = nil
-
-                    elseif abilityId == LEAVE_ABILITY then
-                        -- Leave dismisses the pet outright, so the jug countdown ends with it.
-                        -- (Heel only recalls the pet -- the clock keeps running there.)
-                        State.bst.stayExpiry  = nil
-                        State.jug.expireTime  = nil
-                        State.jug.remaining   = 0
-                        State.jug.duration    = 0
-                        State.jug.pendingCall = false
-
-                    elseif abilityId == CALL_BEAST_ABILITY or abilityId == BESTIAL_LOYALTY_ABILITY then
-                        -- A confirmed summon is the only thing that starts a jug clock, so a
-                        -- stale clock left by an unobserved release -- player KO, job change,
-                        -- pet dying out of sight -- is overwritten, not inherited by the new pet.
-                        State.jug.pendingCall = true
-
-                    elseif abilityId == FAMILIAR_ABILITY then  -- Familiar (BST 2hr): server confirmed
-                        State.familiar.expireTime = os.time() + FAMILIAR_DURATION
-                        State.familiar.remaining  = FAMILIAR_DURATION
-                        State.familiar.elapsed    = 0
-
-                    elseif abilityId == ASTRAL_FLOW_ABILITY then  -- Astral Flow (SMN 2hr): server confirmed
-                        State.avatar.afExpireTime = os.time() + AF_DURATION
-                        State.avatar.afRemaining  = AF_DURATION
-
-                    elseif abilityId == SPIRIT_SURGE_ABILITY then  -- Spirit Surge (DRG 2hr): server confirmed
-                        State.wyvern.ssExpireTime = os.time() + SS_DURATION
-                        State.wyvern.ssRemaining  = SS_DURATION
-
-                    elseif abilityId == OVERDRIVE_ABILITY then  -- Overdrive (PUP 2hr): server confirmed
-                        State.automaton.odExpireTime = os.time() + OD_DURATION
-                        State.automaton.odRemaining  = OD_DURATION
-                    end
-
-                    -- The new automaton's internal cooldowns all start clear, so the old
-                    -- one's stamps must not outlive it.
-                    if abilityId == maneuvers.ACTIVATE_ABILITY or abilityId == maneuvers.DEA_ABILITY then
-                        automatonIcd.onSummonConfirmed()
-                    end
-
-                    -- PUP maneuver burden. The server volunteers the exact overload chance
-                    -- in the action result, so nothing here computes one.
-                    -- Dot calls only: a colon passes the model itself as `index`, which
-                    -- reads back nil and renders every percentage 0 forever, with no error.
-                    local burdenModel = State.automaton and State.automaton.burdenModel
-                    if burdenModel then
-                        local element = maneuvers.byAbilityId[abilityId]
-                        if element then
-                            local result = packets._parseActionResult(data)
-                            -- Cross-check the bitstream reader against the uint16 shortcut:
-                            -- wrong offsets yield plausible garbage rather than an error, so
-                            -- every percentage would render as a meaningless number.
-                            -- The shortcut's abilityId is only the low 10 bits of cmd_arg and
-                            -- must be masked. Both compared fields live in stream bits 10-23,
-                            -- so this verifies alignment only through cmd_arg bit 9 -- not the
-                            -- cmd_arg width above that, nor the target/result skips, which rest
-                            -- on the field widths in _parseActionResult.
-                            if result and (result.cmdNo ~= cmdNo
-                                or bit.band(result.abilityId, 0x3FF) ~= abilityId) then
-                                result = nil
-                            end
-                            local message = result and result.message
-                            local now     = os.time()
-                            if result and message == maneuvers.MSG_OVERLOADED then
-                                burdenModel.stamp(element.index, result.param)
-                                burdenModel.setOverload(result.param, now)
-                            elseif result and message == maneuvers.MSG_OVERLOAD_CHANCE then
-                                -- Taken at face value, Overdrive included. OVERLOAD_THRESH
-                                -- +5000 clamps the reported chance to 0 for the whole of an
-                                -- Overdrive while burden keeps climbing, so the column reads
-                                -- clean through that window and re-anchors on the first
-                                -- report after it drops.
-                                burdenModel.stamp(element.index, result.param)
-                            end
-                        elseif abilityId == maneuvers.ACTIVATE_ABILITY then
-                            -- A fresh automaton spawns with burden in every element, not at
-                            -- 0, so the baseline is SPAWN_PCT. Overload is not cleared here:
-                            -- the Overload buff is the authority and it outlives the
-                            -- automaton, so data.lua reconciles it.
-                            burdenModel.resetAll(burdenModel.SPAWN_PCT)
-                        elseif abilityId == maneuvers.DEA_ABILITY then
-                            -- Without this the model inherits the dead automaton's stamps and
-                            -- every element reads 0 while sitting one maneuver away from a
-                            -- near-certain Overload.
-                            burdenModel.resetAll(burdenModel.DEA_SPAWN_PCT)
-                        end
-                    end
-                end
-            end
-        end
-
-        -- Forward to active module
-        if activeModule and activeModule.onPacket then
-            activeModule.onPacket(e)
-        end
-        return
-    end
-
 end
 
 -- Pure parse: extracts actor server ID from 0x0028 action packet.
@@ -553,8 +613,16 @@ function packets._parseAutomatonAction(data)
 end
 
 -- Pure parse: extracts cmd_no and abilityId from the 0x0028 action packet's
--- bitstream (layout per XiPackets/0x0028/Reversing.md). See handlePacketIn's
--- ACTION branch for the bitstream field breakdown.
+-- bitstream (layout per XiPackets/0x0028/Reversing.md):
+--   Bitstream starts at byte 0x09 (after 32-bit actor ID at 0x05):
+--     bits 0-5:  trg_sum  (6 bits)
+--     bits 6-9:  res_sum  (4 bits)
+--     bits 10-13: cmd_no  (4 bits) <- 6 = Ability Finish
+--     bits 14-45: cmd_arg (32 bits) <- ability ID for cmd_no 6
+--   Reading uint16 at 0x0A covers stream bits 8-23:
+--     bits 0-1 of uint16 = res_sum bits 2-3
+--     bits 2-5 of uint16 = cmd_no  -> rshift(w,2) & 0xF
+--     bits 6-15 of uint16 = cmd_arg bits 0-9 -> rshift(w,6)
 -- Returns { cmdNo, abilityId } or nil.
 function packets._parseActionCommand(data)
     if not data or #data < 12 then return nil end

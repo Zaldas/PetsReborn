@@ -6,8 +6,8 @@
 -- 0x0044 PUP packet, and every gate is timed from the automaton's own actions -- packets.lua
 -- decodes those and calls onCast/onMobSkill.
 --
--- Sole owner of the internal-cooldown recast rows: data.lua appends slots() to the automaton's
--- ability slots, and PetsReborn.lua rebuilds those rows whenever signature() changes.
+-- Owns the internal-cooldown slot list and its timers: data.lua appends slots() to the
+-- automaton's ability slots, and PetsReborn.lua rebuilds those rows whenever signature() changes.
 
 local cooldownData = require('data/automatonCooldowns')
 
@@ -202,7 +202,7 @@ function M.trackPet(serverId)
 end
 
 -- A cast the automaton started. The global gate advances on any cast the controller makes
--- (automaton_controller.cpp:214 stamps it on every successful TrySpellcast, before the head
+-- (the server stamps it on every successful TrySpellcast, before the head
 -- switch picks a category), so it is stamped even for a spell this table does not categorise.
 -- Returning early on those would leave Latency reading ready while the gate is still closed.
 function M.onCast(spellId, now)

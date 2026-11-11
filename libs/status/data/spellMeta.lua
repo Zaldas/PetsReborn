@@ -7,7 +7,7 @@
 return {
     [259] = { buffId = 19, clears = {2, 193} },  -- Sleep II    → SLEEP_II (19), clears Sleep I + Lullaby
     [274] = { buffId = 19, clears = {2, 193} },  -- Sleepga II  → SLEEP_II (19), clears Sleep I + Lullaby
-    [364] = { buffId = 19, clears = {2, 193} },  -- Sleepga III → SLEEP_II (19), clears Sleep I + Lullaby
+    [364] = { buffId = 19, clears = {2, 193} },  -- 364 (not in LSB spell_list.sql) → SLEEP_II (19), clears Sleep I + Lullaby
     [221] = { statusId = 3, displayId = 816 },   -- Poison II   → custom icon (816)
     [226] = { statusId = 3, displayId = 816 },   -- Poisonga II → custom icon (816)
     [80]  = { statusId = 4, displayId = 817 },   -- Paralyze II → custom icon (817)

@@ -82,7 +82,9 @@ function M.initialize(eng, fullLayout, ax, ay, scale)
 
     -- Section extras: create optional img/bg elements for each section.
     extras = {}
-    extras['hp']       = Utils.createSectionExtras(L.hp,       eng, hpX, hpY, root, VIS_TOKEN)
+    if L.hp then
+        extras['hp'] = Utils.createSectionExtras(L.hp, eng, hpX, hpY, root, VIS_TOKEN)
+    end
     if L.name then
         extras['name'] = Utils.createSectionExtras(L.name, eng, L.name.pos[1], L.name.pos[2], root, VIS_TOKEN)
     end
@@ -92,16 +94,18 @@ function M.initialize(eng, fullLayout, ax, ay, scale)
 end
 
 function M.update(tokens)
-    if not hpBar or not L then return end
+    if not root or not L then return end
 
     if L.name     then Utils.applyBinds(nameText, L.name.txt.bind,     tokens, VIS_TOKEN) end
     if L.distance then Utils.applyBinds(distText, L.distance.txt.bind, tokens, VIS_TOKEN) end
-    Utils.applyBinds(hpBar,  L.hp.bar.bind, tokens, VIS_TOKEN, L.hp.thresholds)
-    Utils.applyBinds(hpText, L.hp.txt.bind, tokens, VIS_TOKEN, L.hp.thresholds)
+    if L.hp then
+        Utils.applyBinds(hpBar,  L.hp.bar.bind, tokens, VIS_TOKEN, L.hp.thresholds)
+        Utils.applyBinds(hpText, L.hp.txt.bind, tokens, VIS_TOKEN, L.hp.thresholds)
+    end
 
     if bg then
         local show = tokens['target.active'] == true and tokens['ui.showTargetBar'] ~= false
-        if show then bg:show(VIS_TOKEN); bg:update() else bg:hide(VIS_TOKEN) end
+        if show then bg:show(VIS_TOKEN) else bg:hide(VIS_TOKEN) end
     end
 
     -- Section extras (img/bg elements declared in layout sections)

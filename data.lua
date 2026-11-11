@@ -1,6 +1,6 @@
 -- data.lua
--- Memory access layer for PetsReborn.
--- Only this file calls Ashita APIs. All other code reads from State.
+-- Memory access layer for PetsReborn: reads pet, player and party memory into State each
+-- frame. Rendering code reads State, not memory.
 
 local data   = {}
 local socket = require('socket')
@@ -30,9 +30,11 @@ data.typeToJob = {
 local EMPTY_CHARGE_ENTRY = { modifier = 0, recast = 0 }
 local EMPTY_RECAST_ENTRY = { recast = 0 }
 
--- The scanAll() result refreshState took this frame, or nil when it took none. Published
--- through data.getFrameRecastCache(); refreshState's own copy is a function local.
+-- The scanAll() result refreshState took this frame, or nil when it took none or recast memory
+-- is unavailable; frameScanTaken tells the two apart. Published through
+-- data.getFrameRecastCache(); refreshState's own copy is a function local.
 local frameRecastCache = nil
+local frameScanTaken   = false
 
 -- Pre-allocated recast row pool: getAbilityRecasts() runs every frame while a pet
 -- is active, so rows are reused in place.
@@ -90,14 +92,10 @@ end
 local VANA_EPOCH = 0x3C307D70
 local TIMER_INF  = 0x7FFFFFFF
 
--- Jug pet name hash table and duration table (O(1) lookup) -- populated in data.init()
-local jugPetNames     = {}
-local jugPetDurations = {}  -- name -> duration in seconds
+-- Jug pet name -> duration in seconds; populated in data.init(). Also the jug-name test.
+local jugPetDurations = {}
 
 local DEFAULT_JUG_DURATION = 3600  -- 60 min fallback for unrecognised pets
-
--- Last known BST pet type ('jug' or 'charm'); used by detectPetType() when petName is nil.
-local lastKnownBstType = 'charm'
 
 -- Jug pet name -> duration_minutes (maintained in data/jugPets.lua; add new HorizonXI pets there)
 local JUG_PET_LIST = require('data/jugPets')
@@ -107,39 +105,82 @@ local JUG_PET_LIST = require('data/jugPets')
 -- Add new pet types or abilities there without modifying this file.
 data.abilitySlots = petAbilities.slots
 
--- Initialize: build jug pet lookup tables
+-- Initialize: build the jug pet lookup table
 function data.init()
-    jugPetNames     = {}
     jugPetDurations = {}
     for name, durationMin in pairs(JUG_PET_LIST) do
-        jugPetNames[name]     = true
         jugPetDurations[name] = durationMin * 60
     end
 end
 
--- Detect pet type from player main/sub job and optional pet entity name.
--- Main job takes priority; sub job checked as fallback.
--- petName may be nil (no active pet): BST falls back to lastKnownBstType.
--- Note: /DRG does NOT grant a wyvern; wyvern is main job DRG only.
--- Returns: 'avatar' | 'wyvern' | 'automaton' | 'jug' | 'charm' | nil
-function data.detectPetType(mainJob, subJob, petName)
-    local function bstType()
-        -- An empty name carries no more information than nil: the pet entity exists but has
-        -- not resolved yet (notably the frame a jug pet respawns after a zone). Guessing
-        -- 'charm' there tears down a live jug countdown.
-        if petName == nil or petName == '' then return lastKnownBstType end
-        return jugPetNames[petName] and 'jug' or 'charm'
-    end
+-- Pet entity indices from here up are dynamically allocated (pets, and mobs spawned at runtime);
+-- below it are the zone's own mobs (LSB zone_entities.cpp:73).
+local DYNAMIC_INDEX_START = 0x700
 
+-- Avatar and elemental spirit entity names (LSB sql/pet_list.sql).
+local AVATAR_NAMES = {
+    FireSpirit = true, IceSpirit = true, AirSpirit = true, EarthSpirit = true,
+    ThunderSpirit = true, WaterSpirit = true, LightSpirit = true, DarkSpirit = true,
+    Carbuncle = true, Fenrir = true, Ifrit = true, Titan = true, Leviathan = true,
+    Garuda = true, Shiva = true, Ramuh = true, Diabolos = true, Alexander = true,
+    Odin = true, Atomos = true, ['Cait Sith'] = true, Siren = true,
+}
+
+-- Whether either job can own a pet of this type. /DRG does NOT grant a wyvern.
+local function jobsAllow(petType, mainJob, subJob)
+    if petType == 'avatar' then return mainJob == JOB_SMN or subJob == JOB_SMN end
+    if petType == 'wyvern' then return mainJob == JOB_DRG end
+    if petType == 'automaton' then return mainJob == JOB_PUP or subJob == JOB_PUP end
+    if petType == 'jug' or petType == 'charm' then return mainJob == JOB_BST or subJob == JOB_BST end
+    return false
+end
+
+-- Pet type from the jobs alone: main job first, then sub job. BST resolves to whichever of
+-- jug/charm was last known.
+local function jobPetType(mainJob, subJob, lastKnownType)
+    local bst = (lastKnownType == 'jug' or lastKnownType == 'charm') and lastKnownType or 'charm'
     if     mainJob == JOB_SMN then return 'avatar'
     elseif mainJob == JOB_DRG then return 'wyvern'
     elseif mainJob == JOB_PUP then return 'automaton'
-    elseif mainJob == JOB_BST then return bstType()
+    elseif mainJob == JOB_BST then return bst
     elseif subJob  == JOB_SMN then return 'avatar'
     elseif subJob  == JOB_PUP then return 'automaton'
-    elseif subJob  == JOB_BST then return bstType()
+    elseif subJob  == JOB_BST then return bst
     end
     return nil
+end
+
+-- Resolves the pet type from the pet entity when one exists, else from the jobs.
+-- @param petIdx        PetTargetIndex; 0 = no pet entity
+-- @param petName       entity name; nil or '' while the entity is unloaded or its name has not
+--                      loaded (notably the frames a jug pet respawns after a zone)
+-- @param lastKnownType the last type this returned with determined = true
+-- Returns: type ('avatar' | 'wyvern' | 'automaton' | 'jug' | 'charm' | nil), determined.
+-- determined is true when the entity itself decided the type; only then may the caller record
+-- it as the last known type or end another type's clock.
+-- Known limits: a charmed mob in the dynamic range reads as wyvern on DRG/BST and as automaton
+-- on PUP/BST and BST/PUP; DRG/PUP with an automaton out reads as wyvern.
+function data.resolvePetType(mainJob, subJob, petIdx, petName, lastKnownType)
+    if not petIdx or petIdx == 0 then
+        return jobPetType(mainJob, subJob, lastKnownType), false
+    end
+    local named = petName ~= nil and petName ~= ''
+    if named and jugPetDurations[petName] then return 'jug', true end
+    if petIdx < DYNAMIC_INDEX_START then return 'charm', true end
+    if not named then
+        if lastKnownType and jobsAllow(lastKnownType, mainJob, subJob) then
+            return lastKnownType, false
+        end
+        return jobPetType(mainJob, subJob, lastKnownType), false
+    end
+    -- Avatar names are also automaton and wyvern names (LSB pet_name.sql: Titan), so a name
+    -- match counts only when SMN is main or sub.
+    if AVATAR_NAMES[petName] and jobsAllow('avatar', mainJob, subJob) then return 'avatar', true end
+    if mainJob == JOB_DRG then return 'wyvern', true end
+    if jobsAllow('automaton', mainJob, subJob) then return 'automaton', true end
+    if jobsAllow('charm', mainJob, subJob) then return 'charm', true end
+    local jobType = jobPetType(mainJob, subJob, lastKnownType)
+    return jobType, jobType ~= nil
 end
 
 -- Returns total CHARM_TIME bonus from currently equipped gear.
@@ -187,20 +228,19 @@ end
 -- or, for the automaton, when its equipment changes the internal-cooldown rows.
 -- Every consumer must index THIS list: pet.recast[N] tokens are written by position, so a
 -- consumer that filters differently shifts each row's label and timer against each other.
-local filteredSlotCache = {}   -- [petType] = { key = 'n', slots = {...} }
+local filteredSlotCache = {}   -- [petType] = { level = n, signature = s|nil, slots = {...} }
 
 function data.getFilteredSlots(petType)
     local allSlots = data.abilitySlots[petType]
     if not allSlots then return nil end
 
-    local level = data.getPetJobLevel(petType)
-    local key   = tostring(level)
-    if petType == 'automaton' then
-        key = key .. '|' .. automatonIcd.signature()
-    end
+    local level     = data.getPetJobLevel(petType)
+    local signature = petType == 'automaton' and automatonIcd.signature() or nil
 
     local cached = filteredSlotCache[petType]
-    if cached and cached.key == key then return cached.slots end
+    if cached and cached.level == level and cached.signature == signature then
+        return cached.slots
+    end
 
     local slots = {}
     for _, slot in ipairs(allSlots) do
@@ -217,7 +257,7 @@ function data.getFilteredSlots(petType)
         end
     end
 
-    filteredSlotCache[petType] = { key = key, slots = slots }
+    filteredSlotCache[petType] = { level = level, signature = signature, slots = slots }
     return slots
 end
 
@@ -248,8 +288,9 @@ local function refreshManeuverBuffs(State, player, ownsAutomaton, recastCache)
         counts[i]    = 0
         remaining[i] = 0
     end
-    a.maneuverCount  = 0
-    a.maneuverRecast = 0
+    a.maneuverCount         = 0
+    a.maneuverRecast        = 0
+    a.maneuverRecastUnknown = false
 
     if not ownsAutomaton then
         a.overloadOn        = false
@@ -347,6 +388,11 @@ local function refreshManeuverBuffs(State, player, ownsAutomaton, recastCache)
         a.overloadRemaining = 0
     end
 
+    if abilityRecast.status() ~= 'ok' then
+        a.maneuverRecastUnknown = true
+        return
+    end
+
     -- All eight maneuvers share recast timer 210. Raw values are 1/60-second ticks, matching
     -- getSeconds(); a missing key means the timer is not in the active list, i.e. ready, which
     -- the zeroing above already covers.
@@ -360,6 +406,70 @@ local function refreshManeuverBuffs(State, player, ownsAutomaton, recastCache)
     end
 end
 
+-- Clocks bound to one pet by server id (State[kind].petServerId, 0 = binds to the next pet seen).
+local BOUND_CLOCKS = { 'familiar', 'charm' }
+
+-- Seconds of refreshState frames with no pet before a bound clock is cleared. Outlasts a brief
+-- entity hitch; a different pet ends it at once through its server id.
+local BOUND_CLOCK_GRACE = 3
+
+-- Longest gap one refreshState call adds to a bound clock's no-pet time. Stretches in which
+-- refreshState does not run -- config window preview, hidden interface, zoning -- count as one
+-- frame of at most this long.
+local MAX_FRAME_DT  = 0.25
+local lastRefreshAt = 0   -- socket.gettime() of the previous refreshState call
+
+-- No pet entity this frame: each running bound clock accrues no-pet time and ends past the grace.
+local function accrueNoPetTime(State, frameDt)
+    for i = 1, #BOUND_CLOCKS do
+        local kind  = BOUND_CLOCKS[i]
+        local clock = State[kind]
+        if clock.expireTime then
+            clock.noPetTime = clock.noPetTime + frameDt
+            if clock.noPetTime > BOUND_CLOCK_GRACE then
+                State.clearPet(kind)
+            end
+        end
+    end
+end
+
+-- A pet entity exists, in or out of range.
+local function resetNoPetTime(State)
+    for i = 1, #BOUND_CLOCKS do
+        State[BOUND_CLOCKS[i]].noPetTime = 0
+    end
+end
+
+-- Pet in range: an unbound running clock binds to it; a clock bound to another pet ends.
+local function bindClocksToPet(State, serverId)
+    for i = 1, #BOUND_CLOCKS do
+        local kind  = BOUND_CLOCKS[i]
+        local clock = State[kind]
+        if clock.expireTime then
+            if clock.petServerId == 0 then
+                clock.petServerId = serverId
+            elseif clock.petServerId ~= serverId then
+                State.clearPet(kind)
+            end
+        end
+    end
+end
+
+-- Counts a 2hr timer down from its expiry, clearing the expiry once it passes.
+local function tick2hr(s, expireKey, remainingKey)
+    if s[expireKey] then
+        local remaining = s[expireKey] - os.time()
+        if remaining > 0 then
+            s[remainingKey] = remaining
+        else
+            s[expireKey]    = nil
+            s[remainingKey] = 0
+        end
+    else
+        s[remainingKey] = 0
+    end
+end
+
 -- Populate State from current Ashita memory. Called every frame before rendering.
 -- @param State the shared state table from state.lua
 -- Returns true when player data is valid (not zoning, not on title screen).
@@ -368,6 +478,11 @@ function data.refreshState(State)
     -- Cleared up front so getFrameRecastCache() never hands a later caller a scan from an
     -- earlier frame when one of the guards below returns early.
     frameRecastCache = nil
+    frameScanTaken   = false
+
+    local frameNow = socket.gettime()
+    local frameDt  = math.min(math.max(frameNow - lastRefreshAt, 0), MAX_FRAME_DT)
+    lastRefreshAt  = frameNow
 
     -- Nil guards: bail out if game APIs are unavailable (title screen, etc.)
     if not AshitaCore then
@@ -391,19 +506,6 @@ function data.refreshState(State)
 
     -- 2hr timers: player-state timers that tick even when no pet is active.
     -- Placed before all pet-specific early returns so dismiss/recall doesn't freeze them.
-    local function tick2hr(s, expireKey, remainingKey)
-        if s[expireKey] then
-            local remaining = s[expireKey] - os.time()
-            if remaining > 0 then
-                s[remainingKey] = remaining
-            else
-                s[expireKey]    = nil
-                s[remainingKey] = 0
-            end
-        else
-            s[remainingKey] = 0
-        end
-    end
     tick2hr(State.avatar,    'afExpireTime', 'afRemaining')
     tick2hr(State.wyvern,    'ssExpireTime', 'ssRemaining')
     tick2hr(State.automaton, 'odExpireTime', 'odRemaining')
@@ -417,9 +519,7 @@ function data.refreshState(State)
         if jugRemaining > 0 then
             State.jug.remaining = jugRemaining
         else
-            State.jug.expireTime = nil
-            State.jug.remaining  = 0
-            State.jug.duration   = 0
+            State.clearPet('jug')
         end
     end
 
@@ -431,43 +531,65 @@ function data.refreshState(State)
     end
     local subJob = party:GetMemberSubJob(0) or 0
 
+    -- The pet entity, via the player entity's PetTargetIndex. petEntity is nil while the pet is
+    -- out of range (> 50 yalms): the index stays set but the entity is unloaded.
+    -- GetPlayerEntity() is an Ashita global that returns the player entity object.
+    local playerIdx    = party:GetMemberTargetIndex(0)
+    local playerEntity = (playerIdx and playerIdx ~= 0) and GetPlayerEntity() or nil
+    local petIdx       = playerEntity and playerEntity.PetTargetIndex or 0
+    local petEntity    = petIdx ~= 0 and GetEntity(petIdx) or nil
+    if petEntity and petEntity.ActorPointer == 0 then
+        petEntity = nil
+    end
+    local petType, typeDetermined = data.resolvePetType(mainJob, subJob, petIdx,
+        petEntity and petEntity.Name, State.lastKnownPetType)
+
     -- Maneuver state is player state, read ahead of every pet-presence early return below: an
     -- Overload countdown keeps running after Deactivate, and so does the shared maneuver
-    -- recast. Ownership goes through detectPetType, so a BST/PUP counts as a BST here as it
-    -- does everywhere else. The scan below is this frame's only one: it is taken solely when a
-    -- PUP needs timer 210, and getAbilityRecasts reuses it further down.
-    local ownsAutomaton = data.detectPetType(mainJob, subJob, nil) == 'automaton'
+    -- recast. Ownership is PUP main or sub, whatever pet is out: a PUP/BST keeps an Overload
+    -- running while a jug or charmed pet is out.
+    -- The scan below is this frame's only one: it is taken solely when a PUP needs timer 210,
+    -- and getAbilityRecasts reuses it further down.
+    local ownsAutomaton = jobsAllow('automaton', mainJob, subJob)
     local recastCache   = nil
     if ownsAutomaton then
-        recastCache = abilityRecast.scanAll()
+        recastCache    = abilityRecast.scanAll()
+        frameScanTaken = true
     end
     frameRecastCache = recastCache
     refreshManeuverBuffs(State, player, ownsAutomaton, recastCache)
 
-    -- Get player entity to find pet via PetTargetIndex property
-    local playerIdx = party:GetMemberTargetIndex(0)
     if not playerIdx or playerIdx == 0 then
         State.active = false
         return true
     end
 
-    -- GetPlayerEntity() is an Ashita global that returns the player entity object
-    local playerEntity = GetPlayerEntity()
-    if not playerEntity or playerEntity.PetTargetIndex == 0 then
-        State.active              = false
-        State.petType             = nil
-        State.bst.stayExpiry      = nil   -- pet gone, cancel stay
+    if petIdx == 0 then
         -- Jug clock intentionally left running: no pet entity is the normal state in a city
         -- zone, and the pet returns with its remaining time when you step back into the field.
-        State.target.active       = false
-        State.target.serverId     = 0    -- clear so target bar doesn't linger on next charm
-        State.target.pktServerId  = nil
+        State.clearPresence()
+        accrueNoPetTime(State, frameDt)
         return true
     end
+    resetNoPetTime(State)
 
-    local petIdx = playerEntity.PetTargetIndex
-    local petEntity = GetEntity(petIdx)
-    if not petEntity or petEntity.ActorPointer == 0 then
+    -- Familiar timer: countdown then count-up while the pet lives. Wall-clock, so it ticks
+    -- ahead of the out-of-range return below. Ended by pet death, Leave, a different pet, and
+    -- BOUND_CLOCK_GRACE of frames with no pet.
+    if State.familiar.expireTime then
+        local now       = os.time()
+        local remaining = State.familiar.expireTime - now
+        if remaining > 0 then
+            State.familiar.remaining = remaining
+            State.familiar.elapsed   = 0
+        else
+            -- Familiar expired, pet still alive: count up
+            State.familiar.remaining = 0
+            State.familiar.elapsed   = now - State.familiar.expireTime
+        end
+    end
+
+    if not petEntity then
         -- PetTargetIndex is set but entity not loaded: pet is out of range (> 50 yalms).
         -- Keep the window showing with frozen HP/name; update TP/MP from player memory
         -- (player struct still exposes pet vitals even when the entity is unloaded).
@@ -489,13 +611,7 @@ function data.refreshState(State)
             State.target.active = false
         else
             -- No prior pet state (loaded while already out of range): fully clear.
-            State.active           = false
-            State.outOfRange       = false
-            State.petType          = nil
-            State.bst.stayExpiry = nil
-            State.target.active    = false
-            State.target.serverId  = 0
-            State.target.pktServerId = nil
+            State.clearPresence()
         end
         return true
     end
@@ -504,16 +620,11 @@ function data.refreshState(State)
     -- Catches pet death faster than waiting for ActorPointer to clear.
     local petStatus = entityMgr:GetStatus(petIdx)
     if petStatus == 2 or petStatus == 3 then
-        State.active          = false
-        State.petType         = nil
-        State.bst.stayExpiry  = nil
+        State.clearPresence()
+        State.clearPet('familiar')
+        State.clearPet('charm')
         -- Death genuinely ends a jug pet's lifetime, unlike mere absence above.
-        State.jug.expireTime  = nil
-        State.jug.duration    = 0
-        State.jug.remaining   = 0
-        State.target.active   = false
-        State.target.serverId = 0
-        State.target.pktServerId = nil
+        State.clearPet('jug')
         return true
     end
 
@@ -532,21 +643,31 @@ function data.refreshState(State)
     local rawTp = player:GetPetTP() or 0
     State.tp = (rawTp > 3000) and 0 or rawTp
 
-    -- Pet type detection (subJob read above, ahead of the maneuver buff read)
-    local detectedType = data.detectPetType(mainJob, subJob, State.name)
-    State.petType = detectedType
-
-    -- Cache BST type so detectPetType() can fall back to it when petName is nil
-    if detectedType == 'jug' or detectedType == 'charm' then
-        lastKnownBstType = detectedType
+    -- Pet type, resolved above ahead of the maneuver buff read
+    State.petType = petType
+    if typeDetermined then
+        State.lastKnownPetType = petType
     end
 
-    -- Pet level
-    if State.petType == 'charm' then
+    -- Familiar and the charm clock belong to the pet they were used on: a different pet ends them.
+    bindClocksToPet(State, State.serverId)
+
+    -- A different pet ends the Leave mark on the departing one.
+    if State.dismissedServerId ~= 0 and State.dismissedServerId ~= State.serverId then
+        State.dismissedServerId = 0
+    end
+
+    -- Pet level. A jug pet is capped at the master's main job level (LSB petutils.cpp:1078-1094,
+    -- base LSB; Horizon may diverge); data/jugPets.lua carries no per-pet maximum, so the cap is
+    -- shown. Avatar, wyvern and automaton follow the level of the job that owns them, blank when
+    -- neither job is that one.
+    local petJob = petType and data.typeToJob[petType]
+    if petType == 'charm' then
         State.petLevel = State.charm.mobLevel or 0
-    elseif State.petType then
-        -- avatar/wyvern/automaton/jug all scale with player level
+    elseif petType == 'jug' then
         State.petLevel = player:GetMainJobLevel() or 0
+    elseif petJob == mainJob or petJob == subJob then
+        State.petLevel = data.getPetJobLevel(petType)
     else
         State.petLevel = 0
     end
@@ -568,8 +689,9 @@ function data.refreshState(State)
     -- keeps the clock it already had.
     -- The expireTime == nil arm is the cold-start fallback -- addon loaded (or reloaded past
     -- the persisted expiry) with a pet already out, so no summon was ever observed -- and
-    -- assumes a freshly called pet.
-    if State.petType == 'jug' and State.active and State.name ~= ''
+    -- assumes a freshly called pet. A pet Leave dismissed lingers a few frames and starts nothing.
+    if State.petType == 'jug' and State.name ~= ''
+        and State.dismissedServerId == 0
         and (State.jug.pendingCall or State.jug.expireTime == nil) then
         local durSec = jugPetDurations[State.name] or DEFAULT_JUG_DURATION
         State.jug.expireTime  = os.time() + durSec
@@ -579,13 +701,10 @@ function data.refreshState(State)
     end
 
     -- A different pet type is out, so whatever jug owned this clock is long gone. Requires a
-    -- positively resolved type: an unresolved nil must not tear down a live countdown, since
-    -- detection briefly comes up empty while a respawning pet's name loads.
-    if State.petType ~= nil and State.petType ~= 'jug' and State.jug.expireTime ~= nil then
-        State.jug.expireTime  = nil
-        State.jug.duration    = 0
-        State.jug.remaining   = 0
-        State.jug.pendingCall = false
+    -- type the entity decided: a respawning pet's name loads a few frames late, and the
+    -- last-known type standing in for it must not tear down a live countdown.
+    if typeDetermined and petType ~= nil and petType ~= 'jug' and State.jug.expireTime ~= nil then
+        State.clearPet('jug')
     end
 
     -- Pet target, from two sources in priority order.
@@ -636,36 +755,12 @@ function data.refreshState(State)
     end
 
     -- Update charm countdown from expireTime (set by packet handler on each charm cast)
-    if State.petType == 'charm' and State.active and State.charm.expireTime then
+    if State.petType == 'charm' and State.charm.expireTime then
         State.charm.remaining = math.max(0, State.charm.expireTime - os.time())
         State.charm.known     = true
-    elseif State.petType ~= 'charm' and State.charm.known then
-        -- Pet changed type or left -- clear stale charm state
-        State.charm.expireTime    = nil
-        State.charm.totalDuration = 0
-        State.charm.remaining     = 0
-        State.charm.known         = false
-    end
-
-    -- Familiar timer: countdown then count-up while pet alive; clear when pet dies
-    if State.familiar.expireTime then
-        if not State.active then
-            -- Pet died or left: clear familiar state
-            State.familiar.expireTime = nil
-            State.familiar.remaining  = 0
-            State.familiar.elapsed    = 0
-        else
-            local now       = os.time()
-            local remaining = State.familiar.expireTime - now
-            if remaining > 0 then
-                State.familiar.remaining = remaining
-                State.familiar.elapsed   = 0
-            else
-                -- Familiar expired, pet still alive: count up
-                State.familiar.remaining = 0
-                State.familiar.elapsed   = now - State.familiar.expireTime
-            end
-        end
+    elseif typeDetermined and State.petType ~= 'charm' and State.charm.known then
+        -- Pet changed type -- clear stale charm state
+        State.clearPet('charm')
     end
 
     return true  -- data is valid; caller may proceed with rendering
@@ -676,18 +771,19 @@ end
 -- (it only scans for a PUP, to read the shared maneuver recast).
 --
 -- Lets a caller outside this file feed the scan straight back into getAbilityRecasts and keep
--- the frame to a single 31-slot pass -- refreshState's copy is a function local, and
+-- the frame to a single recast-slot pass -- refreshState's copy is a function local, and
 -- abilityrecast.lua publishes no accessor for the table scanAll() reuses. PetsReborn.lua's
 -- alwaysShow branch is the one caller.
 --
--- nil is a safe return: getAbilityRecasts falls back to its own scan. The table is reused per
--- frame -- never store it.
+-- nil is a safe return: getAbilityRecasts falls back to its own scan only when refreshState took
+-- none this frame. The table is reused per frame -- never store it.
 function data.getFrameRecastCache()
     return frameRecastCache
 end
 
--- Returns [{name, remaining, max, norm, ready, charges, active}] for petType.
--- Scans all 31 recast slots once via scanAll(), then does O(1) lookups per ability.
+-- Returns [{name, remaining, max, norm, ready, charges, maxCharges, isChargeAbility,
+-- isHealTimer, unknown}] for petType.
+-- Scans the recast slots once via scanAll(), then does O(1) lookups per ability.
 -- @param recastCache optional scanAll() result for the current frame. Callers that already
 --        hold one pass it so a frame never scans twice; omitting it takes a fresh scan.
 --        abilityrecast.lua reuses that table, so it must not be stored across frames.
@@ -700,11 +796,22 @@ function data.getAbilityRecasts(petType, recastCache)
     -- warns once per pet-type switch; this runs every frame, so no warning here).
     local slotCount = math.min(#slots, MAX_RECAST_SLOTS)
 
-    local cache = recastCache or abilityRecast.scanAll()   -- single 31-slot pass for this frame
+    -- A scan refreshState took this frame already settled availability, so it is not retaken.
+    local cache = recastCache
+    if cache == nil then
+        if frameScanTaken then
+            cache = frameRecastCache
+        else
+            cache = abilityRecast.scanAll()   -- single slot pass for this frame
+        end
+    end
+    -- Memory-backed rows are unknown while recast memory is unavailable.
+    local unavailable = cache == nil or abilityRecast.status() ~= 'ok'
     local now   = socket.gettime()
     for i = 1, slotCount do
         local slot = slots[i]
         local row = recastRowPool[i]
+        row.unknown = nil
         if slot.isIcd then
             -- The automaton's internal cooldowns are absent from recast memory; automatonIcd
             -- times them from its actions instead. Filled in like a plain ability row.
@@ -718,6 +825,17 @@ function data.getAbilityRecasts(petType, recastCache)
             row.maxCharges      = 0
             row.isChargeAbility = nil
             row.isHealTimer     = nil
+        elseif unavailable and not slot.isHealTimer then
+            row.name            = slot.displayName
+            row.remaining       = 0
+            row.max             = 0
+            row.norm            = 0
+            row.ready           = false
+            row.charges         = 0
+            row.maxCharges      = 0
+            row.isChargeAbility = nil
+            row.isHealTimer     = nil
+            row.unknown         = true
         elseif slot.isChargeAbility then
             -- Charge-based ability (e.g. Ready): compute charges from raw timer.
             -- RecastCalc2 (modifier) stores the effective per-charge recast time in seconds.
@@ -745,7 +863,7 @@ function data.getAbilityRecasts(petType, recastCache)
             else
                 local recharging = math.ceil(rawRecast / chargeValue)
                 charges  = math.max(0, maxCharges - recharging)
-                nextSec  = math.floor(((rawRecast - 1) % chargeValue + 1) / 60)
+                nextSec  = math.ceil(((rawRecast - 1) % chargeValue + 1) / 60)
             end
 
             row.name            = slot.displayName
@@ -770,7 +888,7 @@ function data.getAbilityRecasts(petType, recastCache)
             row.isHealTimer     = true
         else
             local entry        = cache[slot.id] or EMPTY_RECAST_ENTRY
-            local remainingSec = entry.recast > 0 and math.floor(entry.recast / 60) or 0
+            local remainingSec = entry.recast > 0 and math.ceil(entry.recast / 60) or 0
             row.name            = slot.displayName
             row.remaining       = remainingSec
             row.max             = 0

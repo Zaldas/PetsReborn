@@ -67,10 +67,9 @@ local DEFAULT_PCT_GAP = 6
 local PCT_ALIGNS = { left = true, center = true, right = true }
 local DEFAULT_PCT_ALIGN = 'right'
 
--- Percentage text, used when the layout declares neither key. Both are string.format
--- patterns taking the integer chance. '~' marks a derived figure: an Overdrive worst-case
--- add or the Activate spawn seed.
-local DEFAULT_PCT_FORMAT       = '%d%%'
+-- Percentage text, used when the layout declares no pctFormat: a string.format pattern
+-- taking the integer chance.
+local DEFAULT_PCT_FORMAT = '%d%%'
 
 -- A layout format string reaches string.format on the d3d_present path, where a pattern
 -- string.format rejects ('%d %d') throws on every visible frame. Validated once at create,
@@ -493,12 +492,6 @@ function ManeuverRows.new()
         register()
     end
 
-    -- Layout-space height of the column, recast row through the last element row.
-    function self.getHeight()
-        if not created then return 0 end
-        return metrics.h
-    end
-
     -- Second layout pass, driven by petFrame.relayout once the frame's own height is known.
     -- The column cannot derive that figure itself: computeLayoutHeight produces it and runs on
     -- a registry this module writes during finalizeLayout, one step earlier.
@@ -554,7 +547,6 @@ function ManeuverRows.new()
 
         if columnBg then
             setVis(columnBg, true)
-            columnBg:update()
         end
 
         if recastText then

@@ -19,13 +19,14 @@
 -- resist server-side where the addon cannot observe it. The pet's icons are drawn from this
 -- tracker, so a false timer is a visible icon.
 --
--- Scope: every mob skill observed in play (unknownDurations.log, 2026-07-08 onward) whose LSB
+-- Scope: every mob skill observed in play (2026-07-08 onward) whose LSB
 -- script applies a status silently. skillDebuffs entries not yet observed are left alone --
 -- base LSB and Horizon disagree about which skills call setMsg, so those need a live sample.
 --
 -- Durations are pre-resist: mobStatusEffectMove scales duration by the resist rate, so a
 -- partially resisted status wears before the timer. math.randomInt(a, b) is taken at b;
--- calculateDuration(tp, min, max) is taken at its clamp ceiling, the min/max midpoint.
+-- calculateDuration(tp, min, max) is taken at the min/max midpoint, its 2000 TP value; it
+-- reaches max at 3000 TP, so higher-TP uses can outlast the timer.
 --
 -- Pet ability IDs must NOT appear here. They share the mob-skill namespace and this table is
 -- consulted before petAbilities.hitData, so an entry here shadows the tuned pet value --

@@ -1,6 +1,10 @@
 -- layouts/ffxi.lua
 -- FFXI-style layout for PetsReborn.
--- Positions/sizes: D3D menu pixels, authored at ~768p internal (half of 1440p screen).
+-- Positions/sizes: layout pixels at a 1440p baseline, scaled by resY / 1440, or by the
+-- Custom scale setting when it is on.
+--
+-- Other layouts extend this one and list only their differences: see README.md,
+-- "Customising a layout".
 --
 -- ANCHOR SYSTEM
 -- anchor = 'elementName'        -- offset from that element's registered position
@@ -11,7 +15,6 @@ return {
     targetFrame = {
         anchor = 'window.bottom',
         pos    = {0, 3},   -- offset from the anchor; y clears the pet frame's bottom edge
-        height = 44,
         background = {
             imgTop = {
                 path        = 'layouts/assets/ffxi/BgTop.png',
@@ -180,11 +183,10 @@ return {
             },
         },
 
-        -- anchor='name.y': downstream elements collapse to name origin when HP is hidden
+        -- anchor='name.bottom': below the name's registered height
         hp = {
             anchor = 'name.bottom',
             pos    = {0, 0},
-            bind   = { visible = 'pet.active' },
             thresholds = {
                 { below = 0.25, color = '#FC8182FF' },  -- <25%
                 { below = 0.50, color = '#F8BA80FF' },  -- <50%
@@ -221,11 +223,10 @@ return {
             },
         },
 
-        -- avatar and automaton only; anchor falls back to name.y when mp absent
+        -- avatar, automaton and charm only; anchor falls back to name.y when hp is absent
         mp = {
             anchor = {'hp', 'name.y'},
             pos    = {20, 10},
-            bind   = { visible = 'pet.mppActive' },
             bar = {
                 pos       = {0, 0},
                 zOrder    = 1,
@@ -256,11 +257,10 @@ return {
             },
         },
 
-        -- anchor resolves to mp (avatar/automaton) or hp (others)
+        -- anchor resolves to mp while it is registered (avatar/automaton/charm), else hp
         tp = {
             anchor = {'mp', 'hp', 'name.y'},
             pos    = {20, 10},
-            bind   = { visible = 'pet.active' },
             bar = {
                 pos       = {0, 0},
                 zOrder    = 1,
@@ -317,7 +317,7 @@ return {
             iconSize     = 18,    -- layout pixels (1440p baseline)
             iconGap      = 2,
             pos          = { 140, 2 },
-            marginBottom = 14,    -- includes timer label height
+            marginBottom = 14,    -- below the timer labels; their overhang is added separately
             bind = {
                 visible    = 'pet.active',
                 visibleAnd = 'pet.statusActive',
@@ -333,9 +333,6 @@ return {
         },
 
         recast = {
-            bind = {
-                visible = 'ui.showRecasts',
-            },
             anchor                = {'tp.y', 'mp.y', 'hp.y', 'name.y'},
             rowHeight             = 18,
             firstRowPos           = {0, 18},
@@ -359,29 +356,13 @@ return {
                 align       = 'right',
                 pos         = {55, 5},
                 zOrder      = 6,
-                thresholds  = {
-                    { below = 0.01, color = '#66FF66FF' },  -- ready
-                    { below = 0.30, color = '#FFBB44FF' },  -- nearly ready
-                },
             },
             labelOverrides = {
                 ['Stay'] = { text = 'Healing' },
             },
             charges = {
-                --[[
-                txt = {
-                    font        = 'Grammara',
-                    size        = 9,
-                    color       = '#A0C8FFFF',
-                    stroke      = '#062D5480',
-                    strokeWidth = 1,
-                    align       = 'right',
-                    pos         = {175, 2},
-                    zOrder      = 6,
-                },
-                ]]
                 pip = {
-                    path       = 'layouts/assets/ffxi/Pip.png',
+                    path       = 'layouts/assets/ffxi/pip.png',
                     size       = {11, 11},
                     pos        = {110, 5},
                     offset     = {10, 0},
@@ -424,7 +405,7 @@ return {
             -- columnWidth sets the column's extent and the drag hit-rect. It does NOT set the
             -- panel width -- that is authored separately in background.imgTop/imgMid/imgBottom
             -- -- and it never resizes the frame background. It has to cover the widest string
-            -- the column can produce ('~230%' at txt size 11).
+            -- the column can produce ('230%' at txt size 11).
             columnWidth = 72,
             -- firstRowPos[1] is the column's origin: pips, percentages, the recast row and the
             -- panel all derive from it, so it moves the whole column as a unit. -23 leaves a
@@ -444,9 +425,11 @@ return {
             -- tint and zOrder as petFrame.background.
             --
             -- background.pos moves the whole panel; the three img pos values are offsets
-            -- INSIDE it, as in petFrame.background. pos[1] = -panelWidth - firstRowPos[1]
-            -- right-edges the panel on the column's own origin; changing an img width or
-            -- firstRowPos[1] means re-deriving it.
+            -- INSIDE it, as in petFrame.background. pos[1] is measured from the column origin,
+            -- so the panel's right edge sits firstRowPos[1] + pos[1] + panelWidth from the
+            -- frame's left edge: -23 - 39 + 59 = -3, the 3px gap. pos[1] = -panelWidth -
+            -- firstRowPos[1] puts it flush; changing an img width or firstRowPos[1] means
+            -- re-deriving it.
             --
             -- The panel is narrower than columnWidth, and spui does not scissor text to it, so
             -- a percentage wider than the panel renders over the game world rather than clip.
@@ -595,7 +578,6 @@ return {
 
         -- 2hr/familiar ability name label: shown below the window when a timer is active.
         special = {
-            --anchor = 'window.bottom',
             pos    = {0, 0},
             txt    = {
                 font          = 'Penumbra Serif Std',
@@ -627,9 +609,7 @@ return {
         --     makes the two silently drift apart.
         --   raisedOffset is added on top only while pet.specialActive, lifting Overload one
         --     line clear so the two stack instead of overlapping. Optional: absent means
-        --     Overload never leaves the 2h slot. It moves the text only -- section extras
-        --     (img/bg) are positioned once at create time and never repositioned, so an
-        --     authored overload.bg would stay behind in the 2h slot.
+        --     Overload never leaves the 2h slot. Section extras (img/bg) move with the text.
         --
         -- Label only. The countdown lives in the maneuver strip's shared recast row, which
         -- shows pet.overloadTimer while Overload is up.

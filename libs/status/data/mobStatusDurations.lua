@@ -5,7 +5,7 @@
 -- (effects on the enemy target).
 --
 -- selfBuffs: keyed by STATUS EFFECT ID (buff ID)
---   Used when the pet is both actor and target (pet self-buff path).
+--   Used for type 7/11 actions whose actor is also the target (mob and pet self-buffs).
 --   Durations sourced from LSB-server mobskill scripts.
 --   Where scripts vary per-mob, the modal (most common) value is used.
 --   Where duration is tied, the maximum is used so the bar doesn't expire early.
@@ -120,9 +120,10 @@ local selfBuffs = {
     [461] = 60,   -- Impetus         [MNK-type HNMs: 60]
     [500] = 30,   -- Overkill        [rare boss buff granting massive damage bonus: 30]
 
-    -- ── Player-applied debuffs (appear on target mob via mob2h scan) ───────────
+    -- ── Player-applied debuffs ─────────────────────────────────────────────────
+    -- Reached only when a skill applies one of these to its own user; debuffs landing on the
+    -- pet from another actor resolve through skillDebuffs.
     -- These durations are approximations (player-cast debuffs vary by tier/gear).
-    -- selfBuffs acts as fallback: only used when statustracker has no action-packet time.
     -- Source: LSB enfeebling_spell.lua / enfeebling_song.lua / spell scripts.
     -- Always use max tier — wore-off packet handles early removal.
     [3]   = 150,  -- Poison      [Poison I=90s, II=120s, III=150s — use max]
@@ -141,7 +142,7 @@ local selfBuffs = {
 }
 
 -- Resolve self-buff duration. Pass abilityId for exact per-skill lookup (event-driven path);
--- omit or pass nil for modal fallback (mob2h polling path, statusId only).
+-- omit or pass nil for the modal value.
 -- Returns: >0 = duration in seconds, 0 = known permanent (skip tracking), nil = not in selfBuffs.
 local function getSelfBuffDuration(statusId, abilityId)
     local entry = selfBuffs[statusId]
@@ -566,13 +567,13 @@ return {
 
         -- ── Ultima / Proto-Ultima (Temenos / Sea Lions' Den) ─────────────────
         -- nuclear_waste: uses target:addStatusEffectEx + setMsg(NONE) + return statusId
-        --   → NONE message path in statustracker.lua handles this via skillDebuffs-none code path
+        --   → handled by applyNoneMessageSkill in statustracker.lua
         -- wire_cutter (1259), antimatter (1260), equalizer (1261): damage only
-        -- armor_buster (1521): WEIGHT via mobPhysicalStatusEffectMove → AdditionalEffect → additionalEffectDurations[12]=45 ✓
-        -- energy_screen (1522): PHYSICAL_SHIELD via mobBuffMove w/ normal message → selfBuffs[150][1522]=60 ✓
-        -- mana_screen (1523): MAGIC_SHIELD via mobBuffMove w/ normal message → selfBuffs[152].default=60 ✓
-        -- particle_shield (1270): DEFENSE_BOOST via mobBuffMove w/ normal message → selfBuffs[93][1270]=300 ✓
-        -- chemical_bomb (1269): already in skillDebuffs above ✓
+        -- armor_buster (1521): WEIGHT via mobPhysicalStatusEffectMove → AdditionalEffect → additionalEffectDurations[12]=45
+        -- energy_screen (1522): PHYSICAL_SHIELD via mobBuffMove w/ normal message → selfBuffs[150][1522]=60
+        -- mana_screen (1523): MAGIC_SHIELD via mobBuffMove w/ normal message → selfBuffs[152].default=60
+        -- particle_shield (1270): DEFENSE_BOOST via mobBuffMove w/ normal message → selfBuffs[93][1270]=300
+        -- chemical_bomb (1269): already in skillDebuffs above
         [1268] = 60,  -- Nuclear Waste   → ELEMENTALRES_DOWN (802) fixed 60s [nuclear_waste.lua]
 
         -- ── Doll / Golem (Abyssea) ────────────────────────────────────────────

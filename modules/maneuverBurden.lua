@@ -59,12 +59,6 @@ local OVERLOAD_OFFSET = 5
 
 local ManeuverBurden = {}
 
-ManeuverBurden.DECAY_SECONDS   = DECAY_SECONDS
-ManeuverBurden.SPAWN_PCT       = SPAWN_PCT
-ManeuverBurden.DEA_SPAWN_PCT   = DEA_SPAWN_PCT
-ManeuverBurden.OVERLOAD_OFFSET = OVERLOAD_OFFSET
-ManeuverBurden.BASE_DECAY      = BASE_DECAY
-
 -- Burden points shed per tick. Heatsink scales with the live Water Maneuver count, so
 -- the rate changes as water maneuvers are fired and expire -- which is why decay is
 -- integrated by advance() rather than derived from the age of a stamp.

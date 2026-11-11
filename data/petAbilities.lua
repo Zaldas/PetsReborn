@@ -8,7 +8,8 @@
 -- id = ability recast timer ID for direct memory read via abilityrecast lib
 -- displayName = shown in UI
 -- isChargeAbility, maxCharges, baseSecondsPerCharge = charge-based ability config (e.g. Ready)
--- level = minimum job level required (filtered against GetMainJobLevel() for level sync support)
+-- level = minimum job level required (filtered against the owning job's level, main or sub --
+--   data.getPetJobLevel -- so level sync applies)
 -- requiresPet = row is hidden while no pet is out. The pet-acquiring abilities (Activate,
 --   Call Beast, Call Wyvern, Charm) stay listed either way so their recast keeps counting
 --   down with the pet out. Avatar rows are deliberately ungated: SMN summons by spell, so
@@ -77,9 +78,10 @@ local slots = {
 
 -- The most recast rows any one pet type can produce: its ability slots, plus -- for the
 -- automaton alone -- one row per head magic gate and one per distinct attachment ability.
+-- Uncommenting an ability above grows the budget with it.
 --
--- Derived rather than declared, so uncommenting an ability above grows the budget with it
--- instead of silently truncating the list at render time.
+-- The Shield Bash row is covered by maxGates: it exists only on the Valoredge frame, which has
+-- no magic gates (automatonCooldowns.magicFrames).
 local maxAbilities = 0
 for _, list in pairs(slots) do
     maxAbilities = math.max(maxAbilities, #list)

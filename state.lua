@@ -1,6 +1,6 @@
 -- state.lua
 -- Shared state snapshot for PetsReborn.
--- data.lua writes here; all rendering code reads from here via buildTokenTable().
+-- data.lua and packets.lua write here; all rendering code reads from here via buildTokenTable().
 
 local socket         = require('socket')
 local maneuvers      = require('data/maneuvers')
@@ -13,27 +13,33 @@ local MAX_RECAST_SLOTS = petAbilities.MAX_ROWS
 
 local MANEUVER_COUNT = #maneuvers.elements
 
--- Single owner of per-element burden and the derived Overload expiry. Exposed as
--- State.automaton.burdenModel; packets.lua writes it, state.lua and data.lua read it.
--- Every call is dot-style -- a colon call passes the model table as the index argument
--- and every percentage silently reads 0.
-local burdenModel = ManeuverBurden.new()
-
--- Per-frame element tallies, zeroed and refilled in place by data.lua.
-local maneuverCounts    = {}
-local maneuverRemaining = {}
-for i = 1, MANEUVER_COUNT do
-    maneuverCounts[i]    = 0
-    maneuverRemaining[i] = 0
+-- Pet types that own a recast array at State[typeName].recasts; RECAST_TYPES is the same set
+-- keyed by name.
+local PET_TYPES = {'avatar', 'jug', 'charm', 'wyvern', 'automaton'}
+local RECAST_TYPES = {}
+for _, typeName in ipairs(PET_TYPES) do
+    RECAST_TYPES[typeName] = true
 end
 
+-- Value of each recast token field when its slot is empty.
+local RECAST_DEFAULTS = {
+    name       = '',
+    time       = '',
+    norm       = 0,
+    ready      = false,
+    charges    = 0,
+    maxCharges = 0,
+    active     = false,
+}
+
 -- Pre-built full token key strings to avoid per-frame string concatenation.
--- RECAST_KEYS[typeName][i] = e.g. { name = 'avatar.recast[1].name', time = 'avatar.recast[1].time', ... }
 -- PET_RECAST_KEYS[i]       = e.g. { name = 'pet.recast[1].name', ... }
 -- MANEUVER_KEYS[i]         = e.g. { pct = 'pet.maneuver[1].pct', ... }
-local RECAST_KEYS = {}
+-- RECAST_ALIASES[key]      = e.g. RECAST_ALIASES['avatar.recast[1].name'] =
+--                            { typeName = 'avatar', petKey = 'pet.recast[1].name', default = '' }
 local PET_RECAST_KEYS = {}
 local MANEUVER_KEYS = {}
+local RECAST_ALIASES = {}
 do
     local function buildKeys(prefix)
         return {
@@ -46,15 +52,20 @@ do
             active     = prefix .. '.active',
         }
     end
-    local types = {'avatar', 'jug', 'charm', 'wyvern', 'automaton'}
-    for _, typeName in ipairs(types) do
-        RECAST_KEYS[typeName] = {}
-        for i = 1, MAX_RECAST_SLOTS do
-            RECAST_KEYS[typeName][i] = buildKeys(typeName .. '.recast[' .. i .. ']')
-        end
-    end
     for i = 1, MAX_RECAST_SLOTS do
-        PET_RECAST_KEYS[i] = buildKeys('pet.recast[' .. i .. ']')
+        PET_RECAST_KEYS[i] = buildKeys(string.format('pet.recast[%d]', i))
+    end
+    for _, typeName in ipairs(PET_TYPES) do
+        for i = 1, MAX_RECAST_SLOTS do
+            local typeKeys = buildKeys(string.format('%s.recast[%d]', typeName, i))
+            for field, key in pairs(typeKeys) do
+                RECAST_ALIASES[key] = {
+                    typeName = typeName,
+                    petKey   = PET_RECAST_KEYS[i][field],
+                    default  = RECAST_DEFAULTS[field],
+                }
+            end
+        end
     end
     for i = 1, MANEUVER_COUNT do
         local prefix = 'pet.maneuver[' .. i .. ']'
@@ -70,106 +81,230 @@ do
     end
 end
 
-local State = {
-    active      = false,     -- Pet entity present and alive
-    petType     = nil,       -- 'avatar' | 'charm' | 'jug' | 'wyvern' | 'automaton' | nil
-    outOfRange  = false,     -- True when pet exists but is > 50 yalms (entity unloaded)
+-- Builds one State-shaped data table. The live State below is one of these; State.new() builds
+-- independent ones that share no table with it.
+local function newStateData()
+    -- Per-frame element tallies, zeroed and refilled in place by data.lua.
+    local maneuverCounts    = {}
+    local maneuverRemaining = {}
+    for i = 1, MANEUVER_COUNT do
+        maneuverCounts[i]    = 0
+        maneuverRemaining[i] = 0
+    end
 
-    -- Core vitals (all types)
-    name        = '',
-    hpp         = 0,         -- HP percent (0-100, from pet entity; frozen when outOfRange)
-    mpp         = 0,         -- MP percent (0-100; 0 if no MP pool)
-    tp          = 0,         -- TP (0-3000)
-    dist        = 0.0,       -- Distance in yalms (math.sqrt applied)
-    serverId    = 0,
-    petLevel    = 0,
+    return {
+        active      = false,     -- Pet entity present and alive
+        petType     = nil,       -- 'avatar' | 'charm' | 'jug' | 'wyvern' | 'automaton' | nil
+        outOfRange  = false,     -- True when pet exists but is > 50 yalms (entity unloaded)
 
-    -- Pet target sub-window
-    target = {
-        active    = false,
-        name      = '',
-        hpp       = 0,
-        dist      = 0.0,
-        serverId  = 0,
+        -- Last pet type resolved from a loaded pet entity. Survives a zone, so a pet whose name has
+        -- not loaded yet on the far side keeps its type; cleared on character change.
+        lastKnownPetType = nil,
 
-        -- Target server id as last reported by the 0x0067/0x0068 pet sync packet. Three
-        -- distinct values: nil = no packet seen yet (data.lua falls back to entity memory),
-        -- 0 = the server says the pet has no target, >0 = the target's server id.
-        -- Not a token; data.lua resolves it to an entity before anything is displayed.
-        pktServerId = nil,
-    },
+        -- Core vitals (all types)
+        name        = '',
+        hpp         = 0,         -- HP percent (0-100, from pet entity; frozen when outOfRange)
+        mpp         = 0,         -- MP percent (0-100; 0 if no MP pool)
+        tp          = 0,         -- TP (0-3000)
+        dist        = 0.0,       -- Distance in yalms (math.sqrt applied)
+        serverId    = 0,
+        petLevel    = 0,
 
-    -- Per-type extensions
-    avatar = {
-        recasts      = {},        -- [{name, remaining, max, norm, ready, charges, active}] slots 1-6
-        afExpireTime = nil,       -- os.time() of Astral Flow expiry; nil = inactive
-        afRemaining  = 0,         -- seconds remaining (0 when inactive)
-    },
-    -- Familiar: set when BST uses Familiar (2hr). Shared across charm/jug pet types.
-    familiar = {
-        expireTime = nil,   -- os.time() of familiar expiry; nil = inactive
-        remaining  = 0,     -- seconds remaining while counting down
-        elapsed    = 0,     -- seconds elapsed past expiry (count-up while pet still alive)
-    },
-    charm = {
-        expireTime    = nil,    -- os.time() of expiry; nil = unknown
-        totalDuration = 0,      -- original duration in seconds (for progress bar norm)
-        remaining     = 0,
-        known         = false,
-        mobLevel      = 0,
-        recasts       = {},
-    },
-    jug = {
-        petName     = '',
-        expireTime  = nil,
-        remaining   = 0,
-        duration    = 0,
-        pendingCall = false,  -- set by a confirmed Call Beast / Bestial Loyalty; forces the
-                              -- countdown to restart once the new pet entity resolves
-        recasts     = {},
-    },
-    wyvern = {
-        recasts      = {},
-        ssExpireTime = nil,       -- os.time() of Spirit Surge expiry; nil = inactive
-        ssRemaining  = 0,         -- seconds remaining (wyvern despawned during this)
-    },
-    automaton = {
-        recasts      = {},
-        odExpireTime = nil,       -- os.time() of Overdrive expiry; nil = inactive
-        odRemaining  = 0,         -- seconds remaining
+        -- Server id of the pet Leave dismissed while its entity lingers; 0 = none. That pet never
+        -- starts a jug clock.
+        dismissedServerId = 0,
 
-        -- Vitals as last reported by the 0x0044 PUP packet; nil = none seen yet. maxMp 0 is a
-        -- real value, not an absent one: the Valoredge and Sharpshot frames have no MP pool.
-        -- The pool sizes are frame configuration rather than pet state, so State.reset()
-        -- leaves all four alone -- zoning does not change the equipped frame.
-        hp           = nil,
-        maxHp        = nil,
-        mp           = nil,
-        maxMp        = nil,
+        -- Pet target sub-window
+        target = {
+            active    = false,
+            name      = '',
+            hpp       = 0,
+            dist      = 0.0,
+            serverId  = 0,
 
-        -- PUP maneuver column. burdenModel owns every element's burden and the derived
-        -- Overload expiry; there is no burden array or overloadExpiry field here.
-        burdenModel       = burdenModel,
-        maneuverCounts    = maneuverCounts,  -- [1..8] how many of that element are up
-        -- [1..8] seconds until that element's soonest-expiring maneuver drops; 0 when the
-        -- element has none up or the server sent no timer for it.
-        maneuverRemaining = maneuverRemaining,
-        maneuverCount     = 0,               -- total maneuvers up (0-3)
-        maneuverRecast    = 0,               -- shared 10s recast, seconds remaining (0 = ready)
-        overdriveOn       = false,
-        overloadOn        = false,
-        overloadRemaining = 0,               -- derived from burdenModel each frame, like odRemaining
-        heatsink          = false,           -- Heatsink attached; the only BURDEN_DECAY source
-    },
-    bst = {
-        stayExpiry = nil,   -- os.time() of current Stay tick expiry; nil = inactive
-    },
-}
+            -- Target server id as last reported by the 0x0067/0x0068 pet sync packet. Three
+            -- distinct values: nil = no packet seen yet (data.lua falls back to entity memory),
+            -- 0 = the server says the pet has no target, >0 = the target's server id.
+            -- Not a token; data.lua resolves it to an entity before anything is displayed.
+            pktServerId = nil,
+        },
 
-function State.reset()
-    State.active      = false
-    State.petType     = nil
-    State.outOfRange  = false
+        -- Per-type extensions
+        avatar = {
+            recasts      = {},        -- rows from data.getAbilityRecasts, up to MAX_RECAST_SLOTS
+            afExpireTime = nil,       -- os.time() of Astral Flow expiry; nil = inactive
+            afRemaining  = 0,         -- seconds remaining (0 when inactive)
+        },
+        -- Familiar: set when BST uses Familiar (2hr). Shared across charm/jug pet types.
+        familiar = {
+            expireTime  = nil,  -- os.time() of familiar expiry; nil = inactive
+            remaining   = 0,    -- seconds remaining while counting down
+            elapsed     = 0,    -- seconds elapsed past expiry (count-up while pet still alive)
+            petServerId = 0,    -- server id of the pet it was used on; 0 = binds to the next pet seen
+            noPetTime   = 0,    -- seconds of refreshState frames with no pet entity; 0 while one exists
+        },
+        charm = {
+            expireTime    = nil,    -- os.time() of expiry; nil = unknown
+            totalDuration = 0,      -- original duration in seconds (for progress bar norm)
+            remaining     = 0,
+            known         = false,
+            mobLevel      = 0,
+            petServerId   = 0,      -- server id of the charmed mob; 0 = binds to the next pet seen
+            noPetTime     = 0,      -- seconds of refreshState frames with no pet entity
+            recasts       = {},
+        },
+        jug = {
+            petName     = '',
+            expireTime  = nil,
+            remaining   = 0,
+            duration    = 0,
+            pendingCall = false,  -- set by a confirmed Call Beast / Bestial Loyalty; forces the
+                                  -- countdown to restart once the new pet entity resolves
+            recasts     = {},
+        },
+        wyvern = {
+            recasts      = {},
+            ssExpireTime = nil,       -- os.time() of Spirit Surge expiry; nil = inactive
+            ssRemaining  = 0,         -- seconds remaining (wyvern despawned during this)
+        },
+        automaton = {
+            recasts      = {},
+            odExpireTime = nil,       -- os.time() of Overdrive expiry; nil = inactive
+            odRemaining  = 0,         -- seconds remaining
+
+            -- Vitals as last reported by the 0x0044 PUP packet; nil = none seen yet. maxMp 0 is a
+            -- real value, not an absent one: the Valoredge and Sharpshot frames have no MP pool.
+            -- The pool sizes are frame configuration rather than pet state, so State.onZone()
+            -- leaves all four alone -- zoning does not change the equipped frame.
+            hp           = nil,
+            maxHp        = nil,
+            mp           = nil,
+            maxMp        = nil,
+
+            -- PUP maneuver column. burdenModel owns every element's burden and the derived
+            -- Overload expiry; there is no burden array or overloadExpiry field here.
+            -- packets.lua writes it, state.lua and data.lua read it. Every call is dot-style --
+            -- a colon call passes the model table as the index argument and every percentage
+            -- silently reads 0.
+            burdenModel       = ManeuverBurden.new(),
+            maneuverCounts    = maneuverCounts,  -- [1..8] how many of that element are up
+            -- [1..8] seconds until that element's soonest-expiring maneuver drops; 0 when the
+            -- element has none up or the server sent no timer for it.
+            maneuverRemaining = maneuverRemaining,
+            maneuverCount     = 0,               -- total maneuvers up (0-3)
+            maneuverRecast    = 0,               -- shared 10s recast, seconds remaining (0 = ready)
+            maneuverRecastUnknown = false,       -- recast memory unavailable; maneuverRecast is not read
+            overdriveOn       = false,
+            overloadOn        = false,
+            overloadRemaining = 0,               -- derived from burdenModel each frame, like odRemaining
+            heatsink          = false,           -- Heatsink attached; the only BURDEN_DECAY source
+        },
+        bst = {
+            stayExpiry = nil,   -- socket.gettime() of current Stay tick expiry; nil = inactive
+        },
+
+        -- Charm /check state machine, driven by packets.lua. A Charm use queues a /check
+        -- ('sending'); the outgoing 0x00DD is redirected to the charm target ('waiting'); the
+        -- 0x0029 reply sizes the charm timer.
+        charmCheck = {
+            state     = nil,   -- nil | 'sending' | 'waiting'
+            started   = 0,     -- socket.gettime() of the outgoing Charm action
+            target    = nil,   -- target server id from the outgoing Charm action
+            targetIdx = nil,   -- target entity index from the outgoing Charm action
+        },
+    }
+end
+
+local State = newStateData()
+
+-- A fresh State-shaped table with its own burden model and maneuver arrays, carrying none of
+-- the functions below. Writes to it never reach the live State.
+function State.new()
+    return newStateData()
+end
+
+-- Lifecycle transitions. Every clear of a pet-owned clock goes through these, so a new field
+-- is added in one place.
+
+-- Ends a pet-owned clock. kind: 'jug' | 'charm' | 'familiar' | 'all' (all three plus Stay).
+function State.clearPet(kind)
+    local all = kind == 'all'
+    if all or kind == 'jug' then
+        State.jug.expireTime  = nil
+        State.jug.remaining   = 0
+        State.jug.duration    = 0
+        State.jug.pendingCall = false
+    end
+    if all or kind == 'charm' then
+        State.charm.expireTime    = nil
+        State.charm.totalDuration = 0
+        State.charm.remaining     = 0
+        State.charm.known         = false
+        State.charm.mobLevel      = 0
+        State.charm.petServerId   = 0
+        State.charm.noPetTime     = 0
+    end
+    if all or kind == 'familiar' then
+        State.familiar.expireTime  = nil
+        State.familiar.remaining   = 0
+        State.familiar.elapsed     = 0
+        State.familiar.petServerId = 0
+        State.familiar.noPetTime   = 0
+    end
+    if all then
+        State.bst.stayExpiry = nil
+    end
+end
+
+-- No live pet: absent, unloaded with no history, or dead. Pet-owned clocks are left to the
+-- caller -- absence alone does not end a jug clock.
+function State.clearPresence()
+    State.active               = false
+    State.petType              = nil
+    State.outOfRange           = false
+    State.bst.stayExpiry       = nil
+    State.target.active        = false
+    State.target.serverId      = 0
+    State.target.pktServerId   = nil
+    State.dismissedServerId    = 0
+end
+
+-- Leave: every pet-owned clock ends, and the departing pet is marked so its lingering entity
+-- does not start a fresh jug clock.
+function State.onLeave()
+    State.clearPet('all')
+    State.dismissedServerId = State.serverId
+end
+
+-- Familiar confirmed: it belongs to the live pet, or to the next one seen when none is known.
+function State.startFamiliar(duration)
+    State.familiar.expireTime  = os.time() + duration
+    State.familiar.remaining   = duration
+    State.familiar.elapsed     = 0
+    State.familiar.petServerId = State.active and State.serverId or 0
+    State.familiar.noPetTime   = 0
+end
+
+-- Charm sized by the /check reply: the clock belongs to the charmed mob's server id.
+function State.startCharm(mobLevel, duration, serverId)
+    State.charm.mobLevel      = mobLevel
+    State.charm.expireTime    = os.time() + duration
+    State.charm.totalDuration = duration
+    State.charm.known         = true
+    State.charm.petServerId   = serverId or 0
+    State.charm.noPetTime     = 0
+end
+
+function State.clearCharmCheck()
+    State.charmCheck.state     = nil
+    State.charmCheck.target    = nil
+    State.charmCheck.targetIdx = nil
+end
+
+-- Zone-in. Clears pet presence, vitals, target, recasts, the charm and Familiar clocks, Stay
+-- and the charm check.
+function State.onZone()
+    State.clearPresence()
     State.name        = ''
     State.hpp      = 0
     State.mpp      = 0
@@ -178,30 +313,22 @@ function State.reset()
     State.serverId = 0
     State.petLevel = 0
 
-    State.target.active   = false
     State.target.name     = ''
     State.target.hpp      = 0
     State.target.dist     = 0.0
-    State.target.serverId = 0
-    State.target.pktServerId = nil
 
     State.avatar.recasts     = {}
     State.avatar.afRemaining = 0   -- recalculated from afExpireTime each frame; expireTime preserved across zone
-    State.familiar.expireTime = nil
-    State.familiar.remaining  = 0
-    State.familiar.elapsed    = 0
-    State.charm.expireTime    = nil
-    State.charm.totalDuration = 0
-    State.charm.remaining     = 0
-    State.charm.known         = false
-    State.charm.mobLevel      = 0
+    State.clearPet('familiar')
+    State.clearPet('charm')
     State.charm.recasts       = {}
-    State.bst.stayExpiry      = nil
+    State.clearCharmCheck()
     -- Jug timers are deliberately NOT cleared here. On HorizonXI jug pets persist through
     -- zoning and the server restores the ORIGINAL spawn time on the far side, so the countdown
     -- must survive the zone (a pet-less city zone still burns it down). Only Leave, pet death,
     -- expiry, or a fresh Call Beast end a jug clock -- see packets.lua and data.lua.
     -- Charm above IS cleared: charmed pets are despawned unconditionally at the zone line.
+    -- lastKnownPetType is kept for the same reason: the jug pet respawns before its name loads.
     State.jug.recasts       = {}
     State.wyvern.recasts     = {}
     State.wyvern.ssRemaining = 0   -- recalculated from ssExpireTime each frame; expireTime preserved across zone
@@ -217,14 +344,49 @@ function State.reset()
     end
     State.automaton.maneuverCount     = 0
     State.automaton.maneuverRecast    = 0
+    State.automaton.maneuverRecastUnknown = false
     State.automaton.overdriveOn       = false
     State.automaton.overloadOn        = false
     State.automaton.overloadRemaining = 0
 end
 
+-- Another character's settings took over. Clears everything a zone keeps that belongs to the
+-- previous character; the caller restores the new character's persisted clocks afterwards.
+function State.onCharacterChange()
+    State.onZone()
+    State.clearPet('all')
+    State.lastKnownPetType = nil
+
+    State.avatar.afExpireTime    = nil
+    State.wyvern.ssExpireTime    = nil
+    State.automaton.odExpireTime = nil
+
+    local a = State.automaton
+    a.hp, a.maxHp, a.mp, a.maxMp = nil, nil, nil, nil
+    a.heatsink = false
+    a.burdenModel.resetAll(0)
+    a.burdenModel.clearOverload()
+    a.burdenModel.resetClock()
+end
+
 -- Pre-allocated token table reused every frame to avoid per-frame GC allocation.
 -- Callers must consume tokens synchronously (same frame) before the next call clears it.
 local _tokenTable = {}
+
+-- Pet type whose recasts filled pet.recast[N] in the last build; nil when none did.
+local _recastType = nil
+
+-- Per-type recast tokens (avatar.recast[N].name, jug.recast[N].charges, ...) are not stored:
+-- a read resolves to pet.recast[N] when that type is the active one, and to the empty-slot
+-- default otherwise. They are therefore absent from pairs() over the table.
+setmetatable(_tokenTable, {
+    __index = function(t, key)
+        local alias = RECAST_ALIASES[key]
+        if alias == nil then return nil end
+        if alias.typeName == _recastType then return rawget(t, alias.petKey) end
+        return alias.default
+    end,
+})
 
 -- Resolves an automaton vital to a display string, or nil when the pool size is unknown --
 -- which leaves the caller's percent display in place.
@@ -246,8 +408,97 @@ local function resolveVital(exact, max, pct)
     return tostring(exact)
 end
 
+local function alwaysRunning()
+    return true
+end
+
+-- 2hr timers are player state: remaining is checked directly, independent of petType.
+-- The remaining field can only be > 0 when the corresponding main-job 2hr was used, and the
+-- pet may be dismissed or absent while it runs (Spirit Surge despawns the wyvern).
+local function twoHourTimer(group, field, special)
+    return {
+        special = special,
+        applies = function(s) return s[group][field] > 0 end,
+        timer   = function(s) return State._formatTimer(s[group][field]) end,
+        running = alwaysRunning,
+    }
+end
+
+-- Sources of pet.timer, highest priority first; the first whose applies(s) holds is shown.
+-- special names the ability that owns the timer (pet.specialName); nil for the pet's own
+-- duration, which leaves pet.specialActive false.
+local TIMER_SOURCES = {
+    twoHourTimer('avatar',    'afRemaining', 'Astral Flow'),
+    twoHourTimer('wyvern',    'ssRemaining', 'Spirit Surge'),
+    twoHourTimer('automaton', 'odRemaining', 'Overdrive'),
+    -- BST Familiar: overrides the charm/jug duration while active. Once expired with the pet
+    -- still alive it counts up the elapsed time.
+    {
+        special = 'Familiar',
+        applies = function(s)
+            return (s.petType == 'charm' or s.petType == 'jug') and s.active == true
+                   and s.familiar.expireTime ~= nil
+        end,
+        timer   = function(s)
+            if s.familiar.remaining > 0 then return State._formatTimer(s.familiar.remaining) end
+            return State._formatElapsed(s.familiar.elapsed)
+        end,
+        running = alwaysRunning,
+    },
+    {
+        applies = function(s) return s.petType == 'charm' and s.active == true end,
+        timer   = function(s) return s.charm.known and State._formatTimer(s.charm.remaining) or '??' end,
+        running = function(s) return not s.charm.known or (s.charm.remaining or 0) > 0 end,
+    },
+    {
+        applies = function(s) return s.petType == 'jug' and s.active == true end,
+        timer   = function(s) return State._formatTimer(s.jug.remaining) end,
+        running = function(s) return (s.jug.remaining or 0) > 0 end,
+    },
+}
+
+-- Duration tokens owned by one pet type: write(t, s) fills them while that type is active,
+-- defaults otherwise.
+local TYPE_TOKENS = {
+    jug = {
+        defaults = {
+            ['jug.name']          = '',
+            ['jug.remaining']     = '',
+            ['jug.remainingNorm'] = 0,
+            ['jug.elapsed']       = '',
+            ['jug.expired']       = false,
+        },
+        write = function(t, s)
+            t['jug.name']          = s.jug.petName or ''
+            t['jug.remaining']     = State._formatTimer(s.jug.remaining)
+            t['jug.remainingNorm'] = s.jug.duration > 0 and s.jug.remaining / s.jug.duration or 0
+            t['jug.elapsed']       = ''
+            t['jug.expired']       = s.jug.expireTime ~= nil and os.time() >= s.jug.expireTime
+        end,
+    },
+    charm = {
+        defaults = {
+            ['charm.known']         = false,
+            ['charm.remaining']     = '',
+            ['charm.remainingNorm'] = 0,
+            ['charm.elapsed']       = '',
+            ['charm.urgent']        = false,
+        },
+        write = function(t, s)
+            t['charm.known']         = s.charm.known == true
+            t['charm.remaining']     = s.charm.known and State._formatTimer(s.charm.remaining) or '??'
+            t['charm.remainingNorm'] = (s.charm.totalDuration > 0 and (s.charm.remaining or 0) > 0)
+                and (s.charm.remaining / s.charm.totalDuration) or 0
+            t['charm.elapsed']       = ''
+            t['charm.urgent']        = s.charm.known == true and s.charm.remaining ~= nil
+                and s.charm.remaining < 60
+        end,
+    },
+}
+
 -- Build a flat token map from the current State snapshot.
--- All tokens are always present with safe defaults (never nil).
+-- Every token reads non-nil with a safe default; the per-type recast families are resolved
+-- on read rather than stored (see the _tokenTable metatable).
 -- Tokens are strings -> numbers, strings, or bools, EXCEPT 'pet.statusIds' and 'pet.statusTimes',
 -- which are raw Lua tables consumed directly by modules/statusEffects.lua and must not be used in layout binds.
 function State.buildTokenTable(s)
@@ -324,55 +575,18 @@ function State.buildTokenTable(s)
     -- Level
     t['pet.level'] = (s.petLevel and s.petLevel > 0) and tostring(s.petLevel) or ''
 
-    -- Virtual timer tokens (routed by type)
-    -- 2hr timers are player state: remaining is checked directly, independent of petType.
-    -- afRemaining/ssRemaining/odRemaining can only be > 0 when the corresponding main-job 2hr
-    -- was used, and petType is nil briefly during pet dismissal.
-    if s.avatar.afRemaining > 0 then
-        -- SMN: Astral Flow countdown (avatar may be dismissed or absent while flow is active)
-        t['pet.timer']       = State._formatTimer(s.avatar.afRemaining)
-        t['pet.timerActive'] = true
-        t['pet.specialActive']    = true
-        t['pet.specialName']      = 'Astral Flow'
-    elseif s.wyvern.ssRemaining > 0 then
-        -- DRG: Spirit Surge countdown (wyvern is despawned by this ability)
-        t['pet.timer']       = State._formatTimer(s.wyvern.ssRemaining)
-        t['pet.timerActive'] = true
-        t['pet.specialActive']    = true
-        t['pet.specialName']      = 'Spirit Surge'
-    elseif s.automaton.odRemaining > 0 then
-        -- PUP: Overdrive countdown (automaton may be recalled during overdrive)
-        t['pet.timer']       = State._formatTimer(s.automaton.odRemaining)
-        t['pet.timerActive'] = true
-        t['pet.specialActive']    = true
-        t['pet.specialName']      = 'Overdrive'
-    elseif (s.petType == 'charm' or s.petType == 'jug') and s.active == true and s.familiar.expireTime ~= nil then
-        -- BST: Familiar timer (overrides charm/jug duration display while active)
-        if s.familiar.remaining > 0 then
-            t['pet.timer'] = State._formatTimer(s.familiar.remaining)
-        else
-            -- Familiar expired but pet still alive: count up elapsed time
-            t['pet.timer'] = State._formatElapsed(s.familiar.elapsed)
+    -- Virtual timer tokens: first matching TIMER_SOURCES entry
+    local timer, timerActive, special = '', false, nil
+    for _, source in ipairs(TIMER_SOURCES) do
+        if source.applies(s) then
+            timer, timerActive, special = source.timer(s), source.running(s), source.special
+            break
         end
-        t['pet.timerActive'] = true
-        t['pet.specialActive']    = true
-        t['pet.specialName']      = 'Familiar'
-    elseif s.petType == 'charm' and s.active == true then
-        t['pet.timer']            = s.charm.known and State._formatTimer(s.charm.remaining) or '??'
-        t['pet.timerActive']      = not s.charm.known or (s.charm.remaining or 0) > 0
-        t['pet.specialActive']    = false
-        t['pet.specialName']      = ''
-    elseif s.petType == 'jug' and s.active == true then
-        t['pet.timer']            = State._formatTimer(s.jug.remaining)
-        t['pet.timerActive']      = (s.jug.remaining or 0) > 0
-        t['pet.specialActive']    = false
-        t['pet.specialName']      = ''
-    else
-        t['pet.timer']       = ''
-        t['pet.timerActive'] = false
-        t['pet.specialActive']    = false
-        t['pet.specialName']      = ''
     end
+    t['pet.timer']         = timer
+    t['pet.timerActive']   = timerActive
+    t['pet.specialActive'] = special ~= nil
+    t['pet.specialName']   = special or ''
 
     -- Target tokens
     t['target.active']      = s.target.active == true
@@ -395,85 +609,23 @@ function State.buildTokenTable(s)
         t['bst.stayTicks']  = '--'
     end
 
-    -- Type-specific recast tokens (routed by active pet type)
-    if s.petType == 'avatar' then
-        for i = 1, MAX_RECAST_SLOTS do
-            State._writeRecastTokens(t, RECAST_KEYS['avatar'][i], s.avatar.recasts and s.avatar.recasts[i])
-        end
-    elseif s.petType == 'jug' then
-        for i = 1, MAX_RECAST_SLOTS do
-            State._writeRecastTokens(t, RECAST_KEYS['jug'][i], s.jug.recasts and s.jug.recasts[i])
-        end
-        t['jug.name']           = s.jug.petName or ''
-        t['jug.remaining']      = State._formatTimer(s.jug.remaining)
-        t['jug.remainingNorm'] = s.jug.duration > 0 and s.jug.remaining / s.jug.duration or 0
-        t['jug.elapsed']        = ''
-        t['jug.expired']        = s.jug.expireTime ~= nil and os.time() >= s.jug.expireTime
-    elseif s.petType == 'charm' then
-        for i = 1, MAX_RECAST_SLOTS do
-            State._writeRecastTokens(t, RECAST_KEYS['charm'][i], s.charm.recasts and s.charm.recasts[i])
-        end
-        t['charm.known']           = s.charm.known == true
-        t['charm.remaining']       = s.charm.known and State._formatTimer(s.charm.remaining) or '??'
-        t['charm.remainingNorm']  = (s.charm.totalDuration > 0 and (s.charm.remaining or 0) > 0)
-            and (s.charm.remaining / s.charm.totalDuration) or 0
-        t['charm.elapsed']         = ''
-        t['charm.urgent']          = s.charm.remaining ~= nil and s.charm.remaining < 60
-    elseif s.petType == 'wyvern' then
-        for i = 1, MAX_RECAST_SLOTS do
-            State._writeRecastTokens(t, RECAST_KEYS['wyvern'][i], s.wyvern.recasts and s.wyvern.recasts[i])
-        end
-    elseif s.petType == 'automaton' then
-        for i = 1, MAX_RECAST_SLOTS do
-            State._writeRecastTokens(t, RECAST_KEYS['automaton'][i], s.automaton.recasts and s.automaton.recasts[i])
-        end
-    end
-
-    -- Ensure all type-specific tokens have defaults even when that type is not active
-    local allTypes = {'avatar', 'jug', 'charm', 'wyvern', 'automaton'}
-    for _, typeName in ipairs(allTypes) do
-        for i = 1, MAX_RECAST_SLOTS do
-            local keys = RECAST_KEYS[typeName][i]
-            if t[keys.name] == nil then
-                t[keys.name]       = ''
-                t[keys.time]       = ''
-                t[keys.norm]       = 0
-                t[keys.ready]      = false
-                t[keys.charges]    = 0
-                t[keys.maxCharges] = 0
-                t[keys.active]     = false
+    -- Type-specific duration tokens
+    for typeName, typeTokens in pairs(TYPE_TOKENS) do
+        if s.petType == typeName then
+            typeTokens.write(t, s)
+        else
+            for key, value in pairs(typeTokens.defaults) do
+                t[key] = value
             end
         end
     end
 
-    -- Ensure jug/charm specific tokens have defaults
-    if t['jug.name'] == nil then
-        t['jug.name']           = ''
-        t['jug.remaining']      = ''
-        t['jug.remainingNorm'] = 0
-        t['jug.elapsed']        = ''
-        t['jug.expired']        = false
-    end
-    if t['charm.known'] == nil then
-        t['charm.known']           = false
-        t['charm.remaining']       = ''
-        t['charm.remainingNorm']  = 0
-        t['charm.elapsed']         = ''
-        t['charm.urgent']          = false
-    end
-    if t['bst.stayTicks'] == nil then t['bst.stayTicks'] = '--' end
-
-    -- Virtual pet.recast[N] tokens (routed from active type-specific recasts)
-    local typeKeys = s.petType and RECAST_KEYS[s.petType]
+    -- pet.recast[N] tokens, routed from the active type's recasts. The per-type families
+    -- resolve through the token table's __index.
+    _recastType = RECAST_TYPES[s.petType] and s.petType or nil
+    local recasts = _recastType and s[_recastType].recasts
     for i = 1, MAX_RECAST_SLOTS do
-        local dstKeys = PET_RECAST_KEYS[i]
-        t[dstKeys.name]       = (typeKeys and t[typeKeys[i].name])       or ''
-        t[dstKeys.time]       = (typeKeys and t[typeKeys[i].time])       or ''
-        t[dstKeys.norm]       = (typeKeys and t[typeKeys[i].norm])       or 0
-        t[dstKeys.ready]      = (typeKeys and t[typeKeys[i].ready])      or false
-        t[dstKeys.charges]    = (typeKeys and t[typeKeys[i].charges])    or 0
-        t[dstKeys.maxCharges] = (typeKeys and t[typeKeys[i].maxCharges]) or 0
-        t[dstKeys.active]     = (typeKeys and t[typeKeys[i].active])     or false
+        State._writeRecastTokens(t, PET_RECAST_KEYS[i], recasts and recasts[i])
     end
 
     -- PUP maneuver column.
@@ -506,9 +658,15 @@ function State.buildTokenTable(s)
     local maneuverRecast = a.maneuverRecast or 0
     local overloadLeft   = a.overloadRemaining or 0
     t['pet.maneuverCount']      = a.maneuverCount or 0
-    t['pet.maneuverRecast']     = State._formatTimer(maneuverRecast)
-    t['pet.maneuverRecastNorm'] = math.min(maneuverRecast / maneuvers.RECAST_SECONDS, 1)
-    t['pet.maneuverReady']      = maneuverRecast <= 0
+    if a.maneuverRecastUnknown then
+        t['pet.maneuverRecast']     = '??'
+        t['pet.maneuverRecastNorm'] = 0
+        t['pet.maneuverReady']      = false
+    else
+        t['pet.maneuverRecast']     = State._formatTimer(maneuverRecast)
+        t['pet.maneuverRecastNorm'] = math.min(maneuverRecast / maneuvers.RECAST_SECONDS, 1)
+        t['pet.maneuverReady']      = maneuverRecast <= 0
+    end
     t['pet.maneuverUsable']     = not a.overloadOn
     t['pet.overloadActive']     = a.overloadOn == true
     t['pet.overloadLabel']      = 'OVERLOAD'
@@ -520,7 +678,7 @@ function State.buildTokenTable(s)
 end
 
 -- Write recast tokens for a specific slot using its prebuilt keys table
--- (RECAST_KEYS[typeName][i], with .name/.time/.norm/.ready/.charges/.maxCharges/.active).
+-- (PET_RECAST_KEYS[i], with .name/.time/.norm/.ready/.charges/.maxCharges/.active).
 function State._writeRecastTokens(t, keys, r)
     if r then
         if r.isHealTimer then
@@ -533,7 +691,11 @@ function State._writeRecastTokens(t, keys, r)
             t[keys.maxCharges] = 0
         else
             t[keys.name]       = r.name    or ''
-            t[keys.time]       = r.ready and 'Ready' or State._formatTimer(r.remaining or 0)
+            if r.unknown then
+                t[keys.time]   = '??'
+            else
+                t[keys.time]   = r.ready and 'Ready' or State._formatTimer(r.remaining or 0)
+            end
             t[keys.norm]       = r.norm    or 0
             t[keys.ready]      = r.ready   == true
             t[keys.charges]    = r.charges    or 0

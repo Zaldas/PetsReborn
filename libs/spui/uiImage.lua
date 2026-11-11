@@ -127,9 +127,11 @@ local function setPath(image, path)
     if not image.engine or not image.spr then return end
 
     -- absolute paths (drive letter or UNC/leading slash) are passed through as-is,
-    -- relative paths are resolved against the addon's own directory
+    -- relative paths are resolved against the addon's own directory; nil or '' loads nothing
     local fullPath
-    if path and (path:match('^%a:[/\\]') or path:match('^[/\\]')) then
+    if not path or path == '' then
+        fullPath = ''
+    elseif path:match('^%a:[/\\]') or path:match('^[/\\]') then
         fullPath = path
     else
         fullPath = addon.path .. path

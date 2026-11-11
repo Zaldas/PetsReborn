@@ -34,9 +34,10 @@ M.magicFrames = {
 M.SHIELD_BASH_SKILL = 1944
 M.SHIELD_BASH       = 180
 
--- Keyed by headItemId - 0x2000, the raw byte the 0x0044 packet carries. A full transcription of
--- setMagicCooldowns, enhance included, so it can be diffed against LSB; M.display decides which
--- of these become rows.
+-- Keyed by headItemId - 0x2000, the raw byte the 0x0044 packet carries. Every category of LSB's
+-- setMagicCooldowns, enhance included; M.display decides which of these become rows. Where a
+-- value differs from LSB it is measured on Horizon from the automaton's cast intervals, except
+-- Valoredge and Sharpshot magic = 12.8, which is unmeasured (LSB has 10).
 --
 -- An enfeeble equal to magic was floored by the global gate in measurement: its own value is an
 -- upper bound. Stormwaker heal is an upper bound too, <= 12.59 + 3 with Damage Gauge.

@@ -1,11 +1,12 @@
--- petsreborn.lua
+-- PetsReborn.lua
 -- Pet window HUD for FFXI (Ashita v4)
 -- Supports: SMN (avatar), DRG (wyvern), PUP (automaton), BST (jug/charm)
 --
--- Commands:
+-- Commands (/pr is an alias for /petsreborn):
+--   /petsreborn               -- toggle config window
+--   /petsreborn help          -- list commands
 --   /petsreborn reload        -- reload layout and settings
 --   /petsreborn debug         -- print current pet state to chat
---   /pr                       -- alias for /petsreborn (toggles config window)
 
 addon.name    = 'PetsReborn'
 addon.author  = 'Zaldas'
@@ -16,7 +17,7 @@ addon.link    = 'https://github.com/Zaldas/PetsReborn'
 require('common')
 local chat  = require('chat')
 local statusLib = require('libs/status/status')
-statusLib.init({ addonPath = addon.path, addonName = addon.name, enableAuditLog = false })
+statusLib.init({ addonPath = addon.path, addonName = addon.name })
 
 -- Addon modules
 local settings  = require('settings')
@@ -27,10 +28,9 @@ local sprites   = require('libs/spui/sprites')
 local layoutEditor = require('libs/spui/layoutEditor')
 local petFrame     = require('elements/petFrame')
 local configWindow = require('elements/configWindow')
-local ManeuverBurden = require('modules/maneuverBurden')
 local automatonIcd   = require('modules/automatonIcd')
 
--- Default settings (Ashita settings library manages config/addons/petsreborn/settings.json)
+-- Default settings (persisted per character by the Ashita settings library)
 local defaultSettings = T{
     layout      = 'ffxi',      -- which style file to load from layouts/ ('ffxi', 'xiv', ...)
     visible     = true,
@@ -70,6 +70,9 @@ local defaultSettings = T{
 
 local prSettings   = defaultSettings
 local layout       = nil        -- merged layout table
+local layoutFallback = false    -- layout is not the selected style's own (or none loaded)
+local builtStyle     = nil      -- style name and fallback state of the last rebuildWindow
+local builtFallback  = nil
 
 -- Cutscene / interface-hidden detection.
 local pGameMenu        = ashita.memory.find('FFXiMain.dll', 0, "8B480C85C974??8B510885D274??3B05", 16, 0)
@@ -89,7 +92,7 @@ local function getMenuName()
     if menuHeader == 0 then return '' end
     local menuName  = ashita.memory.read_string(menuHeader + 0x46, 16)
     -- selene: allow(bad_string_escape)
-    return string.gsub(tostring(menuName), '\x00', '')
+    return (string.gsub(tostring(menuName), '\x00', ''))
 end
 
 -- Returns true during cutscenes, NPC dialogue, world map, and player-hidden HUD.
@@ -113,13 +116,15 @@ end
 -- Minimal token set that causes all pet window modules to hide their sprites.
 local HIDDEN_TOKENS = { ['pet.active'] = false, ['pet.alwaysShow'] = false }
 
--- Shared read-only empty table for the no-pet status-token branch; never mutated
+-- Shared read-only empty table for the status tokens when the pet has none tracked; never mutated
 -- (statusEffects.lua only reads these tokens via ipairs/pairs).
 local EMPTY_STATUS_TABLE = {}
 
--- Debug view: when set, bypasses Ashita memory and renders fake data instead.
+-- Debug view: when set, the pet window renders fake data from previewState instead of the live
+-- State. previewState is a separate State.new() table built when the preview type is chosen;
+-- nothing in the preview writes the live State, so packets keep updating it underneath.
 local debugViewType = nil
-local debugTimerSnapshot = nil -- real State.* timer values captured on debug-view entry; restored on exit
+local previewState  = nil
 
 -- Maneuver preview data, indexed by data/maneuvers.lua element order:
 -- 1 fire, 2 ice, 3 wind, 4 earth, 5 thunder, 6 water, 7 light, 8 dark.
@@ -136,11 +141,14 @@ local DEBUG_MANEUVER_PCT    = { [1] = 78, [4] = 42, [5] = 15 }
 -- re-stamps them every frame, and the pulse animates off the wall clock.
 local DEBUG_MANEUVER_REMAINING = { [1] = 8, [4] = 40, [7] = 55 }
 
--- Built once and reused: populateFakeState runs every frame, so ManeuverBurden.new() here
--- would allocate eight tables at 60Hz.
-local debugBurdenModel = nil
+-- Preview status strip: status id -> seconds remaining, re-stamped into debugStatusTimes
+-- every frame.
+local DEBUG_STATUS_IDS     = { 1, 3, 4, 33, 43, 65 }
+local DEBUG_STATUS_SECONDS = { [1] = 245, [3] = 47, [4] = 120, [33] = 180, [43] = 30, [65] = 90 }
+local debugStatusTimes     = {}
+
 local _callbacks       = nil   -- built once; closures capture prSettings upvalue so always current
-local prevPetServerId  = 0     -- tracks last pet server ID; used for clearEntity on pet change
+local prevPetServerId  = 0     -- last pet server ID; a change calls statusLib.setTrackedEntity
 local lastPlayerLevel  = -1    -- tracks player level for ability slot filtering on level sync changes
 local lastIcdSignature = nil   -- tracks automaton head/frame/attachments for internal-cooldown rows
 local isZoning         = true  -- suppresses frame until first valid data (cleared on load too)
@@ -175,8 +183,12 @@ local function printStateSnapshot()
     if State.petType and State[State.petType] then
         local recasts = State[State.petType].recasts or {}
         for i, r in ipairs(recasts) do
-            print(chat.message(string.format('  recast[%d] %s: %.1fs %s',
-                i, r.name, r.remaining, r.ready and '(Ready)' or '')))
+            if r.unknown then
+                print(chat.message(string.format('  recast[%d] %s: ??', i, r.name)))
+            else
+                print(chat.message(string.format('  recast[%d] %s: %.1fs %s',
+                    i, r.name, r.remaining, r.ready and '(Ready)' or '')))
+            end
         end
     end
     if State.target.active then
@@ -185,61 +197,9 @@ local function printStateSnapshot()
     end
 end
 
--- Captures the current real State.* timer values before debug view overwrites them.
-local function snapshotTimerState()
-    return {
-        charmExpireTime    = State.charm.expireTime,
-        charmTotalDuration = State.charm.totalDuration,
-        charmKnown         = State.charm.known,
-        charmRemaining     = State.charm.remaining,
-        charmMobLevel      = State.charm.mobLevel,
-        jugPetName         = State.jug.petName,
-        jugExpireTime      = State.jug.expireTime,
-        jugRemaining       = State.jug.remaining,
-        jugDuration        = State.jug.duration,
-        familiarExpireTime = State.familiar.expireTime,
-        familiarRemaining  = State.familiar.remaining,
-        familiarElapsed    = State.familiar.elapsed,
-        bstStayExpiry      = State.bst.stayExpiry,
-        -- The live model instance, not its contents. The preview swaps a separate instance
-        -- into this field, so the real per-element burden and Overload expiry survive it.
-        burdenModel        = State.automaton.burdenModel,
-        -- The preview fakes a Harlequin's vitals, which would otherwise overwrite the real
-        -- figures -- notably the 0 maxMp a Valoredge or Sharpshot reports, leaving the live
-        -- MP bar showing.
-        automatonHp        = State.automaton.hp,
-        automatonMaxHp     = State.automaton.maxHp,
-        automatonMp        = State.automaton.mp,
-        automatonMaxMp     = State.automaton.maxMp,
-    }
-end
-
--- Restores real State.* timer values captured by snapshotTimerState(). No-op when snap is nil.
-local function restoreTimerState(snap)
-    if snap == nil then return end
-    State.charm.expireTime    = snap.charmExpireTime
-    State.charm.totalDuration = snap.charmTotalDuration
-    State.charm.known         = snap.charmKnown
-    State.charm.remaining     = snap.charmRemaining
-    State.charm.mobLevel      = snap.charmMobLevel
-    State.jug.petName         = snap.jugPetName
-    State.jug.expireTime      = snap.jugExpireTime
-    State.jug.remaining       = snap.jugRemaining
-    State.jug.duration        = snap.jugDuration
-    State.familiar.expireTime = snap.familiarExpireTime
-    State.familiar.remaining  = snap.familiarRemaining
-    State.familiar.elapsed    = snap.familiarElapsed
-    State.bst.stayExpiry      = snap.bstStayExpiry
-    State.automaton.burdenModel = snap.burdenModel
-    State.automaton.hp          = snap.automatonHp
-    State.automaton.maxHp       = snap.automatonMaxHp
-    State.automaton.mp          = snap.automatonMp
-    State.automaton.maxMp       = snap.automatonMaxMp
-end
-
 -- Preview type the config window opens on: the pet the player's current job owns, falling
 -- back to DEBUG_TYPES[1] in configWindow.lua when neither job has one. Every type
--- detectPetType can return is in that list. BST resolves through the same jug/charm fallback
+-- resolvePetType can return is in that list. BST resolves through the same jug/charm fallback
 -- the live path uses, so it previews whichever was last out.
 local DEBUG_VIEW_FALLBACK = 'avatar'
 
@@ -250,18 +210,18 @@ local function defaultDebugView()
     local mainJob = party:GetMemberMainJob(0) or 0
     if mainJob == 0 then return DEBUG_VIEW_FALLBACK end
     local subJob = party:GetMemberSubJob(0) or 0
-    return data.detectPetType(mainJob, subJob, nil) or DEBUG_VIEW_FALLBACK
+    return data.resolvePetType(mainJob, subJob, 0, nil, State.lastKnownPetType) or DEBUG_VIEW_FALLBACK
 end
 
 local function applyDebugView(typeOrNil)
     local entering = typeOrNil ~= nil and debugViewType == nil
     local leaving  = typeOrNil == nil and debugViewType ~= nil
 
-    if entering then
-        debugTimerSnapshot = snapshotTimerState()
-    elseif leaving then
-        restoreTimerState(debugTimerSnapshot)
-        debugTimerSnapshot = nil
+    -- A fresh table per preview type, so nothing one type's preview sets lingers into another's.
+    if typeOrNil == nil then
+        previewState = nil
+    elseif typeOrNil ~= debugViewType or previewState == nil then
+        previewState = State.new()
     end
     debugViewType = typeOrNil
 
@@ -281,33 +241,33 @@ local function vprint(msg)
     end
 end
 
--- Populates the shared State table with fake data for a given pet type.
+-- Populates previewState with fake data for a given pet type.
 -- Debug path calls this instead of data.refreshState(); the rest of the pipeline
 -- (buildTokenTable, switchModule, update) is then identical to the live path.
 -- Recasts are generated from data.abilitySlots so debug stays in sync with live slot config.
 local function populateFakeState(petType)
-    State.reset()
+    local preview = previewState
 
-    State.active   = true
-    State.petType  = petType
-    State.name     = ''
-    State.hpp      = 75
-    State.mpp      = 0
-    State.tp       = 800
-    State.dist     = 6.2
-    State.serverId = 0
+    preview.active   = true
+    preview.petType  = petType
+    preview.name     = ''
+    preview.hpp      = 75
+    preview.mpp      = 0
+    preview.tp       = 800
+    preview.dist     = 6.2
+    preview.serverId = 0
 
-    State.target.active   = true
-    State.target.name     = 'Goblin Lancer'
-    State.target.hpp      = 62
-    State.target.dist     = 8.4
-    State.target.serverId = 1
+    preview.target.active   = true
+    preview.target.name     = 'Goblin Lancer'
+    preview.target.hpp      = 62
+    preview.target.dist     = 8.4
+    preview.target.serverId = 1
 
     -- Generate fake recasts from abilitySlots -- always in sync with live slot config.
     -- Odd slots shown as ready (green), even slots shown as cooling down (white).
-    -- norm = fraction elapsed (>0.70 = orange, ready = green, else white)
+    -- norm = fraction of the recast remaining, 1 = just used (>0.70 = amber, ready = green, else white)
     local slots     = data.getFilteredSlots(petType) or {}
-    local typeState = State[petType]
+    local typeState = preview[petType]
     if typeState then
         typeState.recasts = {}
         for i, slot in ipairs(slots) do
@@ -325,34 +285,34 @@ local function populateFakeState(petType)
     end
 
     if petType == 'avatar' then
-        State.name = 'Carbuncle'
-        State.mpp  = 68
-        State.avatar.afRemaining = 120   -- 2:00 Astral Flow
+        preview.name = 'Carbuncle'
+        preview.mpp  = 68
+        preview.avatar.afRemaining = 120   -- 2:00 Astral Flow
 
     elseif petType == 'wyvern' then
-        State.name = 'Wyvern'
-        State.hpp  = 100
-        State.tp   = 0
-        State.wyvern.ssRemaining = 90    -- 1:30 Spirit Surge
+        preview.name = 'Wyvern'
+        preview.hpp  = 100
+        preview.tp   = 0
+        preview.wyvern.ssRemaining = 90    -- 1:30 Spirit Surge
 
     elseif petType == 'automaton' then
-        State.name = 'Automaton'
-        State.mpp  = 85
-        State.automaton.odRemaining = 60 -- 1:00 Overdrive
+        preview.name = 'Automaton'
+        preview.mpp  = 85
+        preview.automaton.odRemaining = 60 -- 1:00 Overdrive
 
         -- Overdrive and Overload both on. They are not mutually exclusive: Overdrive raises
         -- OVERLOAD_THRESH by 5000 so no NEW overload can start, but an Overload already
         -- running keeps its duration. This is the layout case overload.raisedOffset covers:
         -- the OVERLOAD label lifts clear of the Overdrive countdown sharing the 2hr slot.
-        local a = State.automaton
+        local a = preview.automaton
 
         -- Harlequin at 75. A frame with an MP pool is the case worth previewing: the Valoredge
         -- and Sharpshot layout is this one minus the MP row. Derived from the fake percentages
         -- so resolveVital reads the figures out rather than treating them as a stale packet.
         a.maxHp = 1859
         a.maxMp = 246
-        a.hp    = math.floor(a.maxHp * State.hpp / 100)
-        a.mp    = math.floor(a.maxMp * State.mpp / 100)
+        a.hp    = math.floor(a.maxHp * preview.hpp / 100)
+        a.mp    = math.floor(a.maxMp * preview.mpp / 100)
         a.overdriveOn       = true
         a.overloadOn        = true
         a.overloadRemaining = 23        -- 0:23 left, shown on the strip's recast row in red
@@ -364,13 +324,9 @@ local function populateFakeState(petType)
             a.maneuverRemaining[i] = DEBUG_MANEUVER_REMAINING[i] or 0
         end
 
-        -- A dedicated instance, never the live one: the real model holds per-element burden
-        -- and the Overload expiry that must survive the preview. restoreTimerState puts the
-        -- real reference back on exit.
-        if debugBurdenModel == nil then
-            debugBurdenModel = ManeuverBurden.new()
-        end
-        a.burdenModel = debugBurdenModel
+        -- previewState's own model, never the live one: the real model holds per-element
+        -- burden and the Overload expiry, which packets keep writing while the preview is open.
+        local debugBurdenModel = a.burdenModel
 
         -- Re-stamped every frame so decay never accumulates against these entries: a
         -- preview holds still. Stamping mutates in place and allocates nothing.
@@ -387,44 +343,119 @@ local function populateFakeState(petType)
             a.overloadRemaining + debugBurdenModel.OVERLOAD_OFFSET, burdenNow)
 
     elseif petType == 'jug' then
-        State.name = 'CourierCarrie'
-        State.hpp  = 90
-        State.tp   = 300
-        State.jug.petName        = 'CourierCarrie'
-        State.jug.remaining      = 270   -- 4:30 left
-        State.jug.duration       = 1800
-        State.familiar.expireTime = 1    -- non-nil triggers Familiar branch
-        State.familiar.remaining  = 180  -- 3:00 Familiar
+        preview.name = 'CourierCarrie'
+        preview.hpp  = 90
+        preview.tp   = 300
+        preview.jug.petName        = 'CourierCarrie'
+        preview.jug.remaining      = 270   -- 4:30 left
+        preview.jug.duration       = 1800
+        preview.familiar.expireTime = 1    -- non-nil triggers Familiar branch
+        preview.familiar.remaining  = 180  -- 3:00 Familiar
 
     elseif petType == 'charm' then
-        State.name = 'Goblin Mugger'
-        State.hpp  = 62
-        State.mpp  = 65
-        State.tp   = 1500
-        State.charm.known         = true
-        State.charm.remaining     = 185   -- 3:05 left
-        State.charm.totalDuration = 600   -- 10 min charm duration for norm calc
-        State.familiar.expireTime = 1     -- non-nil triggers Familiar branch
-        State.familiar.remaining  = 180   -- 3:00 Familiar
+        preview.name = 'Goblin Mugger'
+        preview.hpp  = 62
+        preview.mpp  = 65
+        preview.tp   = 1500
+        preview.charm.known         = true
+        preview.charm.remaining     = 185   -- 3:05 left
+        preview.charm.totalDuration = 600   -- 10 min charm duration for norm calc
+        preview.familiar.expireTime = 1     -- non-nil triggers Familiar branch
+        preview.familiar.remaining  = 180   -- 3:00 Familiar
     end
 end
 
--- Load layout from layouts/ directory.
--- Each style file is a complete standalone layout; no base+override merging.
-local function loadLayout()
-    local styleName = prSettings.layout or 'ffxi'
-    local layoutPath = addon.path .. 'layouts/' .. styleName .. '.lua'
-    if not ashita.fs.exists(layoutPath) then
-        layoutPath = addon.path .. 'layouts/ffxi.lua'
+-- Layout load errors already printed; cleared when the selected style loads.
+local reportedLayoutErrors = {}
+
+local function reportLayoutError(styleName, err)
+    local message = string.format('Layout %s failed to load: %s', styleName, tostring(err))
+    if reportedLayoutErrors[message] then return end
+    reportedLayoutErrors[message] = true
+    print(chat.header(addon.name) .. chat.error(message))
+end
+
+-- Returns the layout table a layout file builds, or nil and the error.
+local function runLayoutFile(path)
+    local fn, err = loadfile(path)
+    if not fn then return nil, err end
+    local ok, result = pcall(fn)
+    if ok and type(result) == 'table' then return result end
+    return nil, ok and 'did not return a table' or tostring(result)
+end
+
+-- Returns a deep copy of a layout value. A table reached at two keys becomes two tables.
+local function copyLayoutValue(value)
+    if type(value) ~= 'table' then return value end
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[key] = copyLayoutValue(entry)
     end
-    local fn = loadfile(layoutPath)
-    if fn then
-        local ok, result = pcall(fn)
-        if ok and type(result) == 'table' then
-            return result
+    return copy
+end
+
+-- Returns the child value merged over the parent value:
+-- - a child value that is not a table (false included) replaces the parent's;
+-- - a child table with a [1] entry is a full list and replaces the parent's value whole;
+-- - any other child table (maps, sparse patches such as {[5] = x} or {nil, 4}, {}) starts
+--   from a copy of the parent's value when that is a table, else from {}, and merges each
+--   child key into it by these same rules.
+-- Every table in the result is a fresh copy; neither argument is modified.
+local function mergeLayout(parentValue, childValue)
+    if type(childValue) ~= 'table' then return childValue end
+    if childValue[1] ~= nil then return copyLayoutValue(childValue) end
+    local result = type(parentValue) == 'table' and copyLayoutValue(parentValue) or {}
+    for key, value in pairs(childValue) do
+        result[key] = mergeLayout(result[key], value)
+    end
+    return result
+end
+
+-- Returns the style's layout with its extends chain merged in, or nil and the error. chain
+-- lists the styles already being resolved, so a cycle is reported instead of recursing.
+local function resolveLayout(styleName, chain)
+    local path = string.format('%slayouts/%s.lua', addon.path, styleName)
+    if not ashita.fs.exists(path) then return nil, 'file not found' end
+    local result, err = runLayoutFile(path)
+    if not result then return nil, err end
+
+    local parentName = result.extends
+    if parentName == nil then return copyLayoutValue(result) end
+    result.extends = nil
+    if type(parentName) ~= 'string' then
+        return nil, 'extends must be a layout style name'
+    end
+    chain = chain or {}
+    chain[#chain + 1] = styleName
+    for _, name in ipairs(chain) do
+        if name == parentName then
+            return nil, string.format('extends cycle: %s -> %s', table.concat(chain, ' -> '), parentName)
         end
     end
-    return { name = styleName }
+    local parent, parentErr = resolveLayout(parentName, chain)
+    if not parent then
+        return nil, string.format("extends '%s': %s", parentName, parentErr)
+    end
+    return mergeLayout(parent, result)
+end
+
+-- Load layout from layouts/ directory, resolving extends (see resolveLayout).
+-- Returns the layout and whether it is the ffxi fallback in place of the selected style, or
+-- nil when even ffxi fails to load.
+local function loadLayout()
+    local styleName = prSettings.layout or 'ffxi'
+    local result, err = resolveLayout(styleName)
+    if result then
+        reportedLayoutErrors = {}
+        return result, false
+    end
+    reportLayoutError(styleName, err)
+    if styleName ~= 'ffxi' then
+        local fallback, fallbackErr = resolveLayout('ffxi')
+        if fallback then return fallback, true end
+        reportLayoutError('ffxi', fallbackErr)
+    end
+    return nil, true
 end
 
 local SCALE_MIN = 0.25
@@ -513,7 +544,6 @@ end
 
 local function statusEffectsOpts()
     return {
-        addonName = addon.name,
         onMissing = function(statusId, path)
             if prSettings.verbose ~= false then
                 print(chat.header(addon.name) .. chat.warning(
@@ -523,13 +553,23 @@ local function statusEffectsOpts()
     }
 end
 
-local function rebuildWindow()
+-- forceInvalidate reloads the editor's base even when the style is unchanged (its file may be
+-- newer on disk).
+local function rebuildWindow(forceInvalidate)
     local repaired = sanitizeScale()
     repaired = sanitizeRecastVisible() or repaired
     repaired = pruneDeadSettings() or repaired
-    layout = loadLayout()
+    layout, layoutFallback = loadLayout()
     local styleName = prSettings.layout or 'ffxi'
-    local styleOverrides = prSettings.layoutOverrides and prSettings.layoutOverrides[styleName]
+    -- The editor's base follows the loaded style; a rebuild from any path can change it.
+    if forceInvalidate or styleName ~= builtStyle or layoutFallback ~= builtFallback then
+        builtStyle, builtFallback = styleName, layoutFallback
+        layoutEditor.invalidateBase()
+    end
+    -- The style's overrides are not applied to the fallback: repairing them against ffxi
+    -- geometry would rewrite them in settings.
+    local styleOverrides = not layoutFallback and prSettings.layoutOverrides
+        and prSettings.layoutOverrides[styleName]
     if styleOverrides and next(styleOverrides) then
         layoutEditor.applyOverrides(layout, styleOverrides)
         -- Repair after applying, so a hand-edited out-of-range value is written back as the
@@ -540,6 +580,16 @@ local function rebuildWindow()
         settings.save()
     end
     petFrame.destroy()
+    -- A drag cut short by destroy reports its position here; initialize takes prSettings.anchor.
+    local draggedAnchor = petFrame.getAnchor()
+    if draggedAnchor then
+        prSettings.anchor.x = draggedAnchor.x
+        prSettings.anchor.y = draggedAnchor.y
+        settings.save()
+    end
+    -- No layout loaded at all: the pet window stays unbuilt, and petFrame ignores calls until
+    -- it is initialized.
+    if layout == nil then return end
     petFrame.initialize(sprites, layout, prSettings.anchor, prSettings.alignBottom, getEffectiveScale(), statusEffectsOpts())
     -- If debug view is active, reload the type module immediately so the new layout/style is
     -- visible right away.
@@ -550,6 +600,14 @@ local function rebuildWindow()
         local savedVis = prSettings.recastVisible and prSettings.recastVisible[debugViewType]
         petFrame.switchModule(debugViewType, savedVis)
     end
+end
+
+-- settings.load raises petsreborn_settings_update, which rebuilds the window.
+local function reload()
+    prSettings = settings.load(defaultSettings)
+    data.init()
+    configWindow.initialize(addon.path .. 'layouts/', true)
+    vprint(chat.header(addon.name) .. chat.message('Reloaded.'))
 end
 
 local function buildCallbacks()
@@ -567,7 +625,6 @@ local function buildCallbacks()
             prSettings.layout = name
             settings.save()
             rebuildWindow()
-            layoutEditor.invalidateBase()
         end,
         onScale = function(v)
             prSettings.scale = v
@@ -630,14 +687,7 @@ local function buildCallbacks()
             prSettings.lockPosition = v
             settings.save()
         end,
-        onReload = function()
-            prSettings = settings.load(defaultSettings)
-            data.init()
-            rebuildWindow()
-            layoutEditor.invalidateBase()
-            configWindow.initialize(addon.path .. 'layouts/', true)
-            vprint(chat.header(addon.name) .. chat.message('Reloaded.'))
-        end,
+        onReload = reload,
         onResetPosition = function()
             prSettings.anchor = T{ x = 100, y = 100 }
             petFrame.setAnchor(100, 100)
@@ -647,24 +697,62 @@ local function buildCallbacks()
     }
 end
 
+-- Settings folder the in-memory charm and jug clocks belong to; nil before the first restore.
+local timerSettingsPath = nil
+
+-- Sets the charm and jug clocks from prSettings: restored if unexpired, cleared otherwise.
+-- Runs when prSettings belongs to another character than the clocks (addon load, login,
+-- character switch), or storeTimers would write one character's clocks into another's file.
+local function restorePersistedTimers()
+    timerSettingsPath = settings.settings_path()
+    local now = os.time()
+    local charmExpire, charmTotal, jugExpire, jugDuration = nil, 0, nil, 0
+    if prSettings.charmExpireTime and prSettings.charmExpireTime > now then
+        charmExpire = prSettings.charmExpireTime
+        charmTotal  = prSettings.charmTotalDuration or 0
+    end
+    if prSettings.jugExpireTime and prSettings.jugExpireTime > now then
+        jugExpire   = prSettings.jugExpireTime
+        jugDuration = prSettings.jugDuration or 0
+    end
+
+    State.charm.expireTime    = charmExpire
+    State.charm.totalDuration = charmTotal
+    State.charm.known         = charmExpire ~= nil
+    if charmExpire == nil then
+        State.charm.remaining = 0
+    end
+
+    State.jug.expireTime = jugExpire
+    State.jug.duration   = jugDuration
+    if jugExpire == nil then
+        State.jug.remaining = 0
+    end
+end
+
+-- Writes the charm and jug clocks in State to prSettings, saving when they differ.
+local function storeTimers()
+    local cet = State.charm.expireTime or 0
+    local jet = State.jug.expireTime   or 0
+    local charmChanged = cet ~= (prSettings.charmExpireTime or 0)
+        or State.charm.totalDuration ~= (prSettings.charmTotalDuration or 0)
+    local jugChanged = jet ~= (prSettings.jugExpireTime or 0)
+        or State.jug.duration ~= (prSettings.jugDuration or 0)
+    if charmChanged or jugChanged then
+        prSettings.charmExpireTime    = cet
+        prSettings.charmTotalDuration = State.charm.totalDuration or 0
+        prSettings.jugExpireTime      = jet
+        prSettings.jugDuration        = State.jug.duration or 0
+        settings.save()
+    end
+end
+
 -- addon load
 ashita.events.register('load', 'petsreborn_load_cb', function()
     data.init()
     prSettings = settings.load(defaultSettings)
-    layout     = loadLayout()
 
-    -- Restore charm duration from last session if it hasn't expired yet
-    if prSettings.charmExpireTime and prSettings.charmExpireTime > os.time() then
-        State.charm.expireTime    = prSettings.charmExpireTime
-        State.charm.totalDuration = prSettings.charmTotalDuration or 0
-        State.charm.known         = true
-    end
-
-    -- Restore jug duration from last session if it hasn't expired yet
-    if prSettings.jugExpireTime and prSettings.jugExpireTime > os.time() then
-        State.jug.expireTime = prSettings.jugExpireTime
-        State.jug.duration   = prSettings.jugDuration or 0
-    end
+    restorePersistedTimers()
 
     configWindow.initialize(addon.path .. 'layouts/')
     rebuildWindow()
@@ -674,12 +762,21 @@ ashita.events.register('load', 'petsreborn_load_cb', function()
         getLayout = function()
             return layout
         end,
+        -- A fresh load, so the overrides applied to layout never reach the base.
         getBase = function()
-            return loadLayout()
+            if layout == nil or layoutFallback then return nil end
+            local base, isFallback = loadLayout()
+            if isFallback then return nil end
+            return base
         end,
+        isFallback = function()
+            return layout ~= nil and layoutFallback
+        end,
+        -- While the fallback is shown, the style's overrides are not shown: they were made
+        -- against the style's own geometry. layoutEditor.draw writes none while isFallback.
         getOverrides = function()
             local style = prSettings.layout or 'ffxi'
-            if not prSettings.layoutOverrides then
+            if layoutFallback or not prSettings.layoutOverrides then
                 return nil
             end
             return prSettings.layoutOverrides[style]
@@ -723,8 +820,16 @@ ashita.events.register('load', 'petsreborn_load_cb', function()
     settings.register('settings', 'petsreborn_settings_update', function(s)
         if s then
             prSettings = s
-            rebuildWindow()
-            layoutEditor.invalidateBase()
+            -- A reload of the same character's file keeps the in-memory clocks: the file can lag
+            -- them, since storeTimers does not run while the window is hidden or zoning.
+            -- Another character's file replaces everything the previous character left in State.
+            if settings.settings_path() ~= timerSettingsPath then
+                State.onCharacterChange()
+                restorePersistedTimers()
+            else
+                storeTimers()
+            end
+            rebuildWindow(true)
         end
     end)
 
@@ -742,6 +847,7 @@ ashita.events.register('unload', 'petsreborn_unload_cb', function()
     statusLib.Dispose()
     configWindow.destroy()
     petFrame.destroy()
+    sprites.dispose()
     settings.save()
 end)
 
@@ -765,10 +871,13 @@ ashita.events.register('d3d_present', 'petsreborn_present_cb', function()
     -- view builds its preview from that same list.
     automatonIcd.setEnabled(prSettings.showAutomatonIcd ~= false)
 
-    -- Populate State: debug writes fake data; live reads from Ashita memory.
-    -- Both paths then share the same buildTokenTable -> tokens -> petFrame pipeline.
+    -- The table the pet window renders: previewState with fake data while the preview is open,
+    -- else the live State read from Ashita memory. Both share the same
+    -- buildTokenTable -> tokens -> petFrame pipeline.
+    local view = State
     if debugViewType then
         populateFakeState(debugViewType)
+        view = previewState
     else
         -- Suppress frame while zoning: wait until the player entity is spawned in the new zone.
         -- GetMemberTargetIndex(0) == 0 means the player character doesn't exist yet (loading screen).
@@ -804,47 +913,51 @@ ashita.events.register('d3d_present', 'petsreborn_present_cb', function()
         -- alwaysShow: when pet is not active, detect type from job and populate recasts
         if prSettings.alwaysShow and not State.active then
             local p = AshitaCore:GetMemoryManager():GetParty()
-            local jobType = p and data.detectPetType(p:GetMemberMainJob(0) or 0, p:GetMemberSubJob(0) or 0, nil)
+            local jobType = p and data.resolvePetType(p:GetMemberMainJob(0) or 0, p:GetMemberSubJob(0) or 0,
+                0, nil, State.lastKnownPetType)
             if jobType then
                 State.petType = jobType
                 local typeState = State[jobType]
                 if typeState then
                     -- Reuses refreshState's scan for this frame. A PUP with no pet out scans
                     -- for the shared maneuver recast, so omitting the cache here costs a
-                    -- second 31-slot pass. nil (any non-PUP) falls back to a fresh scan.
+                    -- second recast-slot pass. nil (any non-PUP) falls back to a fresh scan.
                     typeState.recasts = data.getAbilityRecasts(jobType, data.getFrameRecastCache())
                 end
             end
         end
+
+        local sid = State.serverId or 0
+        if sid ~= prevPetServerId then
+            statusLib.setTrackedEntity(sid)
+            prevPetServerId = sid
+        end
     end
 
-    local tokens      = State.buildTokenTable(State)
-    local currentType = State.petType
-    tokens['pet.alwaysShow'] = prSettings.alwaysShow == true and not State.active and State.petType ~= nil
+    -- No layout loaded: there is no pet window to drive, but live state and the persisted
+    -- clocks still advance.
+    if layout == nil then
+        storeTimers()
+        return
+    end
+
+    local tokens      = State.buildTokenTable(view)
+    local currentType = view.petType
+    tokens['pet.alwaysShow'] = prSettings.alwaysShow == true and not view.active and view.petType ~= nil
 
     -- Pet status effects tokens: populated here so debug mode can inject fake data.
     if debugViewType then
         local now = os.time()
-        tokens['pet.statusIds']  = { 1, 3, 4, 33, 43, 65 }
-        tokens['pet.statusTimes'] = {
-            [1]  = now + 245,
-            [3]  = now + 47,
-            [4]  = now + 120,
-            [33] = now + 180,
-            [43] = now + 30,
-            [65] = now + 90,
-        }
+        for id, seconds in pairs(DEBUG_STATUS_SECONDS) do
+            debugStatusTimes[id] = now + seconds
+        end
+        tokens['pet.statusIds']  = DEBUG_STATUS_IDS
+        tokens['pet.statusTimes'] = debugStatusTimes
     else
         local sid = State.serverId or 0
-        if sid ~= prevPetServerId then
-            if prevPetServerId ~= 0 then
-                statusLib.clearTrackedEntity(prevPetServerId)
-            end
-            prevPetServerId = sid
-        end
         if State.active and sid ~= 0 then
-            tokens['pet.statusIds']  = statusLib.GetStatusIdsById(sid) or {}
-            tokens['pet.statusTimes'] = statusLib.GetStatusTimesById(sid) or {}
+            tokens['pet.statusIds']  = statusLib.GetStatusIdsById(sid) or EMPTY_STATUS_TABLE
+            tokens['pet.statusTimes'] = statusLib.GetStatusTimesById(sid) or EMPTY_STATUS_TABLE
         else
             tokens['pet.statusIds']  = EMPTY_STATUS_TABLE
             tokens['pet.statusTimes'] = EMPTY_STATUS_TABLE
@@ -894,22 +1007,7 @@ ashita.events.register('d3d_present', 'petsreborn_present_cb', function()
     -- Status icon hover tooltip
     petFrame.drawStatusTooltip(mouseX, mouseY)
 
-    -- Persist charm and jug durations across reloads (live path only)
-    if not debugViewType then
-        local cet = State.charm.expireTime or 0
-        local jet = State.jug.expireTime   or 0
-        local charmChanged = cet ~= (prSettings.charmExpireTime or 0)
-            or State.charm.totalDuration ~= (prSettings.charmTotalDuration or 0)
-        local jugChanged = jet ~= (prSettings.jugExpireTime or 0)
-            or State.jug.duration ~= (prSettings.jugDuration or 0)
-        if charmChanged or jugChanged then
-            prSettings.charmExpireTime    = cet
-            prSettings.charmTotalDuration = State.charm.totalDuration or 0
-            prSettings.jugExpireTime      = jet
-            prSettings.jugDuration        = State.jug.duration or 0
-            settings.save()
-        end
-    end
+    storeTimers()
 
     -- Persist anchor position if user dragged the window
     local newAnch = petFrame.getAnchor()
@@ -922,7 +1020,7 @@ end)
 
 -- Packet handlers
 ashita.events.register('packet_in', 'petsreborn_packet_in_cb', function(e)
-    if e.id == 0x000B then
+    if e.id == packets.ID.ZONE_OUT then
         -- Zone-out: player is leaving. Clear zoneInReceived so d3d_present suppresses
         -- unconditionally until 0x00A arrives (entity may still be alive when this fires).
         isZoning       = true
@@ -931,12 +1029,12 @@ ashita.events.register('packet_in', 'petsreborn_packet_in_cb', function(e)
         -- Close config window and clear debug view on zone transition.
         applyDebugView(nil)
         configWindow.close()
-    elseif e.id == 0x000A then
+    elseif e.id == packets.ID.ZONE_IN then
         -- Zone-in: arrived in new zone. Allow d3d_present to use entity check to clear isZoning.
         isZoning       = true
         zoneInReceived = true
     end
-    packets.handlePacketIn(e, State, petFrame.getActiveModule())
+    packets.handlePacketIn(e, State)
 end)
 
 ashita.events.register('packet_out', 'petsreborn_packet_out_cb', function(e)
@@ -956,12 +1054,7 @@ ashita.events.register('command', 'petsreborn_command_cb', function(e)
         print(chat.header(addon.name) .. chat.message('/pr reload   Reload settings and rebuild window'))
         print(chat.header(addon.name) .. chat.message('/pr debug    Print state snapshot to chat'))
     elseif cmd == 'reload' then
-        prSettings = settings.load(defaultSettings)
-        data.init()
-        rebuildWindow()
-        layoutEditor.invalidateBase()
-        configWindow.initialize(addon.path .. 'layouts/', true)
-        vprint(chat.header(addon.name) .. chat.message('Reloaded.'))
+        reload()
     elseif cmd == 'debug' then
         printStateSnapshot()
     elseif cmd == '' then
@@ -972,7 +1065,7 @@ ashita.events.register('command', 'petsreborn_command_cb', function(e)
             applyDebugView(nil)
         end
     else
-        print(chat.header(addon.name) .. chat.warning('Unknown command: ' .. cmd .. '. Use /pr help for usage.'))
+        print(chat.header(addon.name) .. chat.warning(string.format('Unknown command: %s. Use /pr help for usage.', cmd)))
     end
 end)
 

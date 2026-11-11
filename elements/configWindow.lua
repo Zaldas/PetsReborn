@@ -1,6 +1,6 @@
 -- elements/configWindow.lua
 -- ImGui configuration window for PetsReborn.
--- Toggle with /pr (no args). Drawn every frame from petsreborn.lua d3d_present.
+-- Toggle with /pr (no args). Drawn every frame from PetsReborn.lua d3d_present.
 
 local imgui       = require('imgui')
 local petAbilities = require('data/petAbilities')
@@ -9,9 +9,6 @@ local layoutEditor = require('libs/spui/layoutEditor')
 local uiTheme      = require('libs/uiTheme')
 
 local M = {}
-
--- ImGuiWindowFlags_NoResize = 2
-local IMGUI_NO_RESIZE = 2
 
 local open      = false
 local styleList = {}
@@ -37,15 +34,8 @@ local TAB_WIDTHS = {
 local TAB_PADDING     = 20
 local TAB_SPACING     = 4
 local WINDOW_CHROME   = 16
-local TAB_BAR_MIN     = 300   -- used when CalcTextSize is unavailable to measure with
 
--- Driven by TAB_WIDTHS rather than a second list of names, so a tab added there widens the
--- floor with it. The sum does not care what order pairs() hands them back in.
 local function minTabBarWidth()
-    if imgui.CalcTextSize == nil then
-        return TAB_BAR_MIN
-    end
-
     local total = WINDOW_CHROME
     for name in pairs(TAB_WIDTHS) do
         local labelWidth = imgui.CalcTextSize(name)
@@ -77,7 +67,7 @@ local function scanStyles(layoutsPath)
     local results = {}
     local path = layoutsPath:gsub('/', '\\')
     local dir = path:sub(-1) == '\\' and path or (path .. '\\')
-    local files = ashita.fs.get_dir(path, '.*.lua', false)
+    local files = ashita.fs.get_dir(path, '.*\\.lua', false)
     if files then
         for _, fname in pairs(files) do
             local name = fname:match('^(.+)%.lua$')
@@ -120,8 +110,7 @@ end
 
 -- Draw the config window. Call every frame from d3d_present BEFORE the visibility guard.
 -- prSettings: the addon settings table (read for current values)
--- cb: callbacks table with keys: onAlwaysShow, onAlignBottom, onStyle, onScale,
---     onDebugView, onResetPosition, onPrintState, onSave
+-- cb: callbacks table; each control calls the on* key it names (onStyle, onScale, onSave, ...)
 -- debugViewType: current debug view string or nil
 function M.draw(prSettings, cb, debugViewType)
     if not open then return end
@@ -153,7 +142,7 @@ function M.draw(prSettings, cb, debugViewType)
                     imgui.EndCombo()
                 end
 
-                local currentDV = debugViewType or 'avatar'
+                local currentDV = debugViewType or DEBUG_TYPES[1]
                 imgui.SetNextItemWidth(uiTheme.comboWidth())
                 if imgui.BeginCombo('Preview##debugview', currentDV) then
                     for _, t in ipairs(DEBUG_TYPES) do
@@ -232,10 +221,12 @@ function M.draw(prSettings, cb, debugViewType)
                     cb.onReload()
                 end
                 if imgui.IsItemHovered() then
-                    imgui.SetTooltip(
+                    uiTheme.tooltipBegin()
+                    imgui.TextUnformatted(
                         'Reload layout and settings from disk.\n' ..
                         'Use this to apply changes made to layout files.'
                     )
+                    uiTheme.tooltipEnd()
                 end
 
                 imgui.Spacing()
@@ -244,10 +235,12 @@ function M.draw(prSettings, cb, debugViewType)
                     cb.onResetPosition()
                 end
                 if imgui.IsItemHovered() then
-                    imgui.SetTooltip(
+                    uiTheme.tooltipBegin()
+                    imgui.TextUnformatted(
                         'Snap window to position (100, 100).\n' ..
                         'Use this if the window has moved off-screen.'
                     )
+                    uiTheme.tooltipEnd()
                 end
 
                 imgui.EndTabItem()
@@ -319,7 +312,7 @@ function M.draw(prSettings, cb, debugViewType)
                     { key = 'charm',     label = 'Charm (BST)'     },
                 }
 
-                if not prSettings.recastVisible then prSettings.recastVisible = {} end
+                local recastVisible = prSettings.recastVisible or {}
 
                 imgui.Indent(uiTheme.indent)
                 for _, typeEntry in ipairs(RECAST_TYPES) do
@@ -328,7 +321,7 @@ function M.draw(prSettings, cb, debugViewType)
                     if #abilities > 0 then
                         if imgui.TreeNode(typeEntry.label) then
                             imgui.Indent(uiTheme.subIndent)
-                            local typeVis = prSettings.recastVisible[petType] or {}
+                            local typeVis = recastVisible[petType] or {}
                             for _, slot in ipairs(abilities) do
                                 local slotVis = { typeVis[tostring(slot.id)] ~= false }
                                 if imgui.Checkbox(slot.displayName .. '##rc_' .. petType .. '_' .. slot.id, slotVis) then
@@ -413,8 +406,6 @@ function M.draw(prSettings, cb, debugViewType)
                     'ticking one now decides what shows the next time it is on the automaton.'
                 )
 
-                -- Reached without the Display tab having been opened, so this cannot lean on
-                -- the Recasts section having seeded recastVisible.
                 local recastVisible = prSettings.recastVisible or {}
                 local attachmentVis = recastVisible.automaton or {}
                 imgui.Indent(uiTheme.indent)
@@ -451,15 +442,15 @@ function M.draw(prSettings, cb, debugViewType)
 
     local n = uiTheme.push()
     local windowWidth = TAB_WIDTHS[currentTab] or 240
-    if currentTab == 'Layout' and layoutEditor.isRegistered() and layoutEditor.getSuggestedWidth then
+    if currentTab == 'Layout' and layoutEditor.isRegistered() then
         windowWidth = layoutEditor.getSuggestedWidth()
     end
     windowWidth = math.max(windowWidth, minTabBarWidth())
-    imgui.SetNextWindowSize({windowWidth, 0}, 1)  -- per-tab width; height=0 auto-fits content
+    imgui.SetNextWindowSize({windowWidth, 0}, ImGuiCond_Always)  -- per-tab width; height=0 auto-fits content
 
     local visible = { true }
     local ok, err = true, nil
-    if imgui.Begin('PetsReborn.' .. addon.version, visible, IMGUI_NO_RESIZE) then
+    if imgui.Begin('PetsReborn.' .. addon.version .. '###PetsRebornConfig', visible, ImGuiWindowFlags_NoResize) then
         ok, err = pcall(drawBody)
     end
     imgui.End()

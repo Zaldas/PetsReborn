@@ -13,6 +13,7 @@ local MAX_PIPS  = 3
 
 -- Ready and warn states are not layout-driven: recast.timer.thresholds cannot express
 -- them, because norm is 0 for every non-charge ability whether or not it is ready.
+-- Warn (amber) marks a charge just spent: more than 70% of the charge recast remaining.
 local COLOR_READY   = { r = 102, g = 255, b = 102, a = 255 }
 local COLOR_WARN    = { r = 255, g = 187, b = 68,  a = 255 }
 local COLOR_DEFAULT = { r = 240, g = 240, b = 240, a = 255 }
@@ -26,16 +27,19 @@ function RecastRows.new()
     local alwaysShowMode  = false
     local recastVisible   = {}   -- [tostring(id)] = false to hide; nil/absent = show
     local petPresent      = false
+    local showRecasts     = true
     local pipColorFull    = nil
     local pipColorEmpty   = nil
     local timerColor      = COLOR_DEFAULT
 
     local self = {}
 
-    -- Whether a slot occupies a row right now: config toggle plus the pet-presence gate.
+    -- Whether a slot occupies a row right now: the recast-rows toggle, the per-slot config
+    -- toggle and the pet-presence gate.
     -- The row list changes length when the pet comes or goes, so reposition() and
     -- getVisibleCount() must agree with update(), or rows render at another row's coordinates.
     local function slotEnabled(slot)
+        if not showRecasts then return false end
         if not slot then return true end
         if recastVisible[tostring(slot.id)] == false then return false end
         if slot.requiresPet and not petPresent then return false end
@@ -142,7 +146,7 @@ function RecastRows.new()
                 }
                 rows[i] = { nameText = nameText, timerText = timerText,
                             chargesText = chargesText, pips = pips,
-                            prefix = prefix, slot = slots[i], keys = keys }
+                            slot = slots[i], keys = keys }
             end
         end
     end
@@ -211,11 +215,15 @@ function RecastRows.new()
     function self.update(tokens)
         local active      = tokens['pet.active']     == true
         petPresent        = active
+        -- An absent token means no information, NOT on: the hidden-frame token set carries no ui.* keys.
+        local showRecastsToken = tokens['ui.showRecasts']
+        if showRecastsToken ~= nil then
+            showRecasts = showRecastsToken ~= false
+        end
         if #rows == 0 then return end
 
         local alwaysShow   = tokens['pet.alwaysShow'] == true
         local L            = layout and layout.petFrame
-        local showRecasts  = tokens['ui.showRecasts'] ~= false
 
         for _, row in ipairs(rows) do
             local slot    = row.slot
@@ -223,7 +231,7 @@ function RecastRows.new()
 
             if slot and slot.isHealTimer then
                 local visAnd     = slot.visTokenAnd
-                local slotActive = showRecasts and (active or alwaysShow) and slotVis
+                local slotActive = (active or alwaysShow) and slotVis
                                 and (visAnd == nil or tokens[visAnd] ~= false)
                 setVis(row.nameText,  slotActive)
                 setVis(row.timerText, slotActive)
@@ -238,7 +246,7 @@ function RecastRows.new()
                 end
             else
                 local keys       = row.keys
-                local slotActive = showRecasts and tokens[keys.active] == true and (active or alwaysShow) and slotVis
+                local slotActive = tokens[keys.active] == true and (active or alwaysShow) and slotVis
                 local maxCharges = tokens[keys.maxCharges] or 0
                 local charges    = tokens[keys.charges]    or 0
 
@@ -267,7 +275,7 @@ function RecastRows.new()
                     end
 
                     if row.chargesText and maxCharges > 0 then
-                        row.chargesText:update(charges .. '/' .. maxCharges)
+                        row.chargesText:update(string.format('%d/%d', charges, maxCharges))
                     end
 
                     if pipColorFull then

@@ -1,6 +1,6 @@
 --[[
     spui/sprites.lua
-    Instanced sprite engine factory for PetsReborn.
+    Instanced sprite engine factory.
     Each newEngine() call returns an isolated sprite context.
     A single global D3DXSprite and imageCache are shared across all engines.
 ]]
@@ -21,17 +21,8 @@ local M = {}
 local d3dDevice = d3d8.get_device()
 local d3dSprite = nil          -- single D3DXSprite shared across all engines
 local imageCache = {}          -- path -> {texture, width, height}; shared (textures are immutable)
--- ORDERING CONTRACT: cross-engine render order is pure insertion order — there is
--- no z-index concept. The d3d_present dispatcher below iterates this list with
--- ipairs(), so engines created earlier draw first (i.e. behind later ones).
--- engine:destroy() removes an engine from this list, and a subsequent
--- M.newEngine() call appends the new engine at the END of the list. This means a
--- style/scale-triggered engine rebuild (destroy + newEngine) silently moves that
--- engine's render layer to the BACK of the global cross-engine order. Today this
--- is invisible in PetsReborn because only one engine exists (shared by petFrame
--- and targetFrame), but any future consumer that needs more than one engine per
--- addon with stable cross-engine layering will need this API extended with an
--- explicit ordering/z-index parameter.
+-- Cross-engine render order is insertion order: engines created earlier draw behind later
+-- ones, so destroy() + newEngine() puts an engine on top of every other.
 local engines = {}             -- ordered list of all engine instances (controls cross-system z-order)
 
 -- Pre-allocated FFI structs for 9-slice rendering (reused each frame; single-threaded safe)
@@ -42,7 +33,7 @@ local nsVecScale = ffi.new('D3DXVECTOR2[9]')
 local function createD3DSprite()
     local ptr = ffi.new('ID3DXSprite*[1]')
     if ffi.C.D3DXCreateSprite(d3dDevice, ptr) ~= ffi.C.S_OK then
-        error('[PetsReborn] Failed to create D3DXSprite')
+        error(string.format('[%s] Failed to create D3DXSprite', addon.name))
     end
     return d3d8.gc_safe_release(ffi.cast('ID3DXSprite*', ptr[0]))
 end
@@ -132,7 +123,9 @@ local function renderNineSlice(spr, v)
 end
 
 -- Global render dispatcher
-ashita.events.register('d3d_present', '__petsreborn_spui_present_cb', function()
+local PRESENT_CB = string.format('__%s_spui_present_cb', string.lower(addon.name))
+
+ashita.events.register('d3d_present', PRESENT_CB, function()
     if d3dSprite ~= nil then
         d3dSprite:Begin()
         for _, eng in ipairs(engines) do
@@ -258,6 +251,15 @@ end
 -- Clears the image cache (call on addon reload if textures change).
 function M.clearCache()
     imageCache = {}
+end
+
+-- Unload teardown. Call after every gdifonts object is destroyed: the dispatcher above
+-- calls gdi:render(), so it is unregistered before the font manager is released.
+function M.dispose()
+    ashita.events.unregister('d3d_present', PRESENT_CB)
+    engines    = {}
+    imageCache = {}
+    gdi:destroy_interface()
 end
 
 return M

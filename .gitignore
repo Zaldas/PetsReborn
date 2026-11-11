@@ -1,7 +1,7 @@
 # Local editor config (machine-specific)
 .vscode/
 
-# asimov knowledge base (lives in the private addons monorepo)
+# local knowledge folder (not part of this repo)
 knowledge
 
 # Internal design notes and working docs — never tracked, never shipped

@@ -6,8 +6,8 @@
 --         and individual spell scripts.
 --
 -- Duration = 0 means the effect is not time-based (shadow count, luopan-tied) — no timer shown.
--- Song durations are the no-instrument/no-JA base (120s); actual in-game values are
--- typically 240-288s with Troubadour. Timer will be conservative but functional.
+-- Song durations are the no-instrument/no-JA base (120s); instruments and gear extend them,
+-- so a song timer can end early.
 
 return {
 
@@ -21,8 +21,8 @@ return {
     [216] = 120, [217] = 180, [366] = 120,  -- Gravity / Gravity II / Graviga
     [254] = 180, [276] = 180, [361] = 180,  -- Blind / Blind II / Blindga
     [59]  = 120, [359] = 120,               -- Silence / Silencega
-    [253] = 60,  [273] = 60,  [363] = 60,  -- Sleep / Sleepga / (legacy ID)
-    [259] = 90,  [274] = 90,  [364] = 90,  -- Sleep II / Sleepga II / Sleepga III
+    [253] = 60,  [273] = 60,  [363] = 60,  -- Sleep / Sleepga / 363 (not in LSB spell_list.sql)
+    [259] = 90,  [274] = 90,  [364] = 90,  -- Sleep II / Sleepga II / 364 (not in LSB spell_list.sql)
     [258] = 60,  [362] = 60,               -- Bind / Bindga
     [252] = 5,                             -- Stun
     [98]  = 90,                            -- Repose (WHM sleep, applies Sleep I effect)
@@ -32,7 +32,7 @@ return {
     [220] = 90,  [221] = 120, [222] = 150, -- Poison / Poison II / Poison III
     [225] = 90,  [226] = 120, [227] = 150, -- Poisonga / Poisonga II / Poisonga III
 
-    -- Elemental DoTs (base 90s; 120s with max Elemental Debuff Duration merits)
+    -- Elemental DoTs (HorizonXI: 120s; LSB base 90s)
     [235] = 120, [236] = 120, [237] = 120, -- Burn / Frost / Choke
     [238] = 120, [239] = 120, [240] = 120, -- Rasp / Shock / Drown
 
@@ -63,7 +63,7 @@ return {
     [458] = 60,  [459] = 60,  [460] = 60,  [461] = 60,  -- Threnody I-VIII
     [871] = 90,  [872] = 90,  [873] = 90,  [874] = 90,
     [875] = 90,  [876] = 90,  [877] = 90,  [878] = 90,  -- Threnody II I-VIII
-    [421] = 120, [422] = 180, [423] = 240, -- Battlefield / Carnage / Massacre Elegy  (423 trust-only; LSB unimplemented, extrapolated)
+    [421] = 120, [422] = 180, [423] = 240, -- Battlefield / Carnage / Massacre Elegy  (423 trust-only; extrapolated, LSB enfeebling_song.lua has 180)
     [376] = 30,  [463] = 30,              -- Horde Lullaby / Foe Lullaby
     [377] = 60,  [471] = 60,              -- Horde Lullaby II / Foe Lullaby II
     [472] = 120,                          -- Pining Nocturne
@@ -302,7 +302,6 @@ return {
     [469] = 120,  -- Adventurer's Dirge
 
     -- ── Geomancy (GEO job — not on HorizonXI era server, commented out) ──────
-    -- Trust GEOs (e.g. T. Sovereign) do use Indi-spells; uncomment as seen in logs.
     -- [768] = 180,  -- Indi-Regen
     -- [770] = 180,  -- Indi-Refresh
     -- [771] = 180,  -- Indi-Haste
@@ -318,7 +317,7 @@ return {
     -- [781] = 180,  -- Indi-Acumen
     -- [782] = 180,  -- Indi-Fend
     -- [783] = 180,  -- Indi-Precision
-    [784] = 180,  -- Indi-Voidance  (Trust GEO confirmed in logs; base 180s per geomancer.lua)
+    [784] = 180,  -- Indi-Voidance  (base 180s per geomancer.lua)
     -- [785] = 180,  -- Indi-Focus
     -- [786] = 180,  -- Indi-Attunement
     -- [798] = 0,    -- Geo-Regen
@@ -350,113 +349,4 @@ return {
     -- [824] = 0,    -- Geo-Slow
     -- [825] = 0,    -- Geo-Paralysis
     -- [826] = 0,    -- Geo-Gravity
-
-    -- ── Monster abilities and pet blood pacts ─────────────────────────────
-    -- Action types 7 (MobSkill), 11, and 13 (Pet) are not type-6 JAs, so they
-    -- fall through to this table. IDs are network packet ability IDs.
-    -- 2hr IDs sourced from LSB scripts/enum/job_special_ability.lua (xi.jsa.*).
-
-    -- NM/mob 2-hour self-buffs (type 11 actions).
-    -- These IDs are shared by ALL mobs using the job_special mixin — not mob-specific.
-    -- Maat/Prishe/variant IDs for the same 2hr are grouped alongside the primary.
-    [688] = 45,   -- MIGHTY_STRIKES         (statusId=44)
-    [1008] = 45,  -- MIGHTY_STRIKES_MAAT
-    [690] = 45,   -- HUNDRED_FISTS          (statusId=46)
-    [1009] = 45,  -- HUNDRED_FISTS_MAAT
-    [1485] = 45,  -- HUNDRED_FISTS_PRISHE
-    [691] = 60,   -- MANAFONT               (statusId=47)
-    [1011] = 60,  -- MANAFONT_MAAT
-    [692] = 60,   -- CHAINSPELL             (statusId=48)
-    [1012] = 60,  -- CHAINSPELL_MAAT
-    [693] = 30,   -- PERFECT_DODGE          (statusId=49)
-    [1013] = 30,  -- PERFECT_DODGE_MAAT
-    [694] = 30,   -- INVINCIBLE             (statusId=50)
-    [1014] = 30,  -- INVINCIBLE_MAAT
-    [695] = 30,   -- BLOOD_WEAPON           (statusId=51)
-    [1015] = 30,  -- BLOOD_WEAPON_MAAT
-    [2249] = 30,  -- BLOOD_WEAPON_IXDRK
-    [696] = 180,  -- SOUL_VOICE             (statusId=52)
-    [1018] = 180, -- SOUL_VOICE_MAAT
-    [730] = 30,   -- MEIKYO_SHISUI          (statusId=54)
-    [1020] = 30,  -- MEIKYO_SHISUI_MAAT
-    [734] = 30,   -- ASTRAL_FLOW            (statusId=55)
-    [1023] = 30,  -- ASTRAL_FLOW_MAAT
-    [1933] = 45,  -- AZURE_LORE             (statusId=163)
-
-    -- ── Monster skills (type 7) — debuffs on players only ─────────────────────
-    -- Mob SELF-buffs are handled by mob2h memory tracking (mobStatusDurations.lua).
-    -- Only debuffs that land on party members need entries here.
-    -- IDs = mob_skills.sql mob_skill_id.
-    [805]  = 180, -- head_butt_turtle: ACCURACY_DOWN          (Adamantoise/KA, LSB: 120-180s random; use max)
-    [957]  = 45,  -- absolute_terror: TERROR single target    (Fafnir/Nidhogg, LSB: 15-45s random; use max)
-    [1220] = 60,  -- auroral_drape:  SILENCE on targets       (Weeper, LSB: 60s)
-    [1238] = 60,  -- target_analysis: STAT_DOWN on targets    (Proto-Omega, LSB: 60s each)
-    [1268] = 60,  -- nuclear_waste:  ELEMENTALRES_DOWN        (Ultima, LSB: 60s)
-    [1269] = 120, -- chemical_bomb:  ELEGY+SLOW               (Ultima, LSB: 120s each)
-    [1285] = 45,  -- absolute_terror: TERROR single target    (Tiamat, LSB: 15-45s random; use max)
-    [1295] = 45,  -- absolute_terror: TERROR single target    (Vrtra, LSB: 15-45s random; use max)
-    [1305] = 18,  -- absolute_terror: TERROR AoE              (Vrtra, LSB: 10-18s random; use max)
-    [1315] = 45,  -- absolute_terror: TERROR single target    (Jormungand, LSB: 15-45s random; use max)
-    [1521] = 45,  -- armor_buster:   WEIGHT on targets        (Ultima, LSB: 45s)
-    [1536] = 60,  -- target_analysis: STAT_DOWN on targets    (Omega, LSB: 60s each)
-    [1548] = 45,  -- absolute_terror: TERROR                  (Bahamut, LSB: 15-45s random; use max)
-
-    -- ── Blood Pacts (type 13 Pet actions) ────────────────────────────────────
-    -- Durations from LSB scripts/actions/abilities/pets/*.lua
-    -- Skill-based formula: duration = base + clamp(summoning_skill - 300, 0, 200)
-    -- At era 75 cap (~275 skill), bonusTime = 0 — base duration is accurate for most players.
-
-    -- Carbuncle
-    [514] = 180,  -- Shining Ruby:    SHINING_RUBY to party  (LSB: 180 + skill bonus)
-    [515] = 90,   -- Glittering Ruby: stat boost to party    (LSB: 90s fixed)
-
-    -- Titan
-    [564] = 900,  -- Earthen Ward:    STONESKIN to party     (LSB: 900s fixed)
-
-    -- Garuda
-    [596] = 900,  -- Aerial Armor:    BLINK to party         (LSB: 900s fixed)
-    [548] = 60,   -- Crimson Howl:    WARCRY to party        (LSB: base 60s)
-    [595] = 180,  -- Hastega:         HASTE to party         (LSB: base 180s)
-    [602] = 180,  -- Hastega II:      HASTE to party         (LSB: base 180s)
-
-    -- Shiva
-    [610] = 180,  -- Frost Armor:     ICE_SPIKES to party    (LSB: base 180s)
-
-    -- Ramuh
-    [628] = 180,  -- Lightning Armor: SHOCK_SPIKES to party  (LSB: base 180s)
-    [626] = 120,  -- Rolling Thunder: ENTHUNDER to party     (LSB: base 120s)
-
-    -- Fenrir
-    [532] = 180,  -- Ecliptic Growl:  all stat boosts        (LSB: base 180s)
-    [533] = 180,  -- Ecliptic Howl:   ACC+EVA boost          (LSB: base 180s)
-    [660] = 180,  -- Noctoshield:     PHALANX to party       (LSB: base 180s)
-
-    -- Diabolos
-    [661] = 180,  -- Dream Shroud:    MAB+MDB to party       (LSB: base 180s)
-
-    -- Leviathan
-    [579] = 180,  -- Spring Water:    REFRESH to party       (observed in logs, statusId=43)
-    [586] = 180,  -- Soothing Current: CURING_CONDUIT        (LSB: 180s fixed)
-
-    -- Phoenix
-    [526] = 3600, -- Reraise II:      RERAISE to party       (LSB: 3600s = 1 hour)
-
-    -- Alexander (Perfect Defense — self-only, ~30-45s at era skill cap)
-    [671] = 45,   -- Perfect Defense: PERFECT_DEFENSE        (LSB: 30 + skill/20)
-
-    -- ── Blood Pact debuffs on enemies ─────────────────────────────────────────
-    [513] = 60,   -- Poison Nails:    POISON     (LSB: 60s)
-    [522] = 90,   -- Mewing Lullaby:  SLEEP_I    (LSB: 90s * resist)
-    [523] = 30,   -- Eerie Eye:       SILENCE+AMNESIA (LSB: 30s * resist)
-    [528] = 30,   -- Moonlit Charge:  BLINDNESS  (LSB: 30s)
-    [529] = 90,   -- Crescent Fang:   PARALYSIS  (LSB: 90s)
-    [530] = 180,  -- Lunar Cry:       ACC_DOWN+EVA_DOWN (LSB: 180s)
-    [567] = 3,    -- Geocrush:        STUN       (LSB: 3s)
-    [578] = 120,  -- Tail Whip:       WEIGHT     (LSB: 120s * resist)
-    [580] = 180,  -- Slowga:          SLOW       (LSB: 180s + mod, cap 350)
-    [585] = 60,   -- Tidal Roar:      ATTACK_DOWN (LSB: 60s)
-    [611] = 90,   -- Sleepga:         SLEEP_I    (LSB: 90s * resist)
-    [627] = 60,   -- Thunderspark:    PARALYSIS  (LSB: 60s)
-    [657] = 120,  -- Somnolence:      WEIGHT     (LSB: 120s * resist)
-    [658] = 90,   -- Nightmare:       SLEEP_I+BIO (LSB: 90s * resist)
 }

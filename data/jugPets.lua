@@ -1,6 +1,7 @@
 -- data/jugPets.lua
 -- Jug pet name → duration in minutes.
--- Used by data.lua to build jugPetNames (bool) and jugPetDurations (seconds) in data.init().
+-- Used by data.lua to build jugPetDurations (seconds) in data.init(); a name absent here is
+-- not detected as a jug pet.
 -- HorizonXI-specific pets without confirmed data default to 60.
 -- Add new HorizonXI pets here; do NOT edit data.lua for pet additions.
 return {
@@ -34,10 +35,10 @@ return {
     ChopsueyChucky   = 60,
 
     -- 90 minute pets
-    HareFamiliar   = 90,
+    HareFamiliar    = 90,
     KeenearedSteffi = 90,
-    GooeyGerard    = 90,
-    CrudeRaphie    = 90,
+    GooeyGerard     = 90,
+    CrudeRaphie     = 90,
 
     -- 120 minute pets
     NurseryNazuna    = 120,

@@ -83,18 +83,18 @@ local SCALAR_CLAMPS = {
     animSpeed    = { 0, 1 },
     alphaFloor   = { 0, 1 },
     period       = { 0.05, 60 },
-    columns      = { 1, 6, true },    -- VanaVista; used as a divisor
-    rows         = { 1, 18, true },   -- VanaVista
-    maxChars     = { 0, 64, true },   -- VanaVista
+    columns      = { 1, 6, true },    -- used as a divisor
+    rows         = { 1, 18, true },
+    maxChars     = { 0, 64, true },
 }
 
 local COORD_CLAMPS = {
     size          = { 0, 4000 },     -- image WxH; the editor does not expose sprite mirroring
     iconSize      = { 1, 256 },
     scale         = { 0.05, 10 },    -- uiElement scale multiplier
-    spacing       = { -64, 256 },    -- VanaVista; negative = deliberate icon overlap
-    numIconsByRow = { 0, 32, true }, -- VanaVista
-    offsetByRow   = { 0, 32, true }, -- VanaVista
+    spacing       = { -64, 256 },    -- negative = deliberate icon overlap
+    numIconsByRow = { 0, 32, true },
+    offsetByRow   = { 0, 32, true },
 }
 
 -- Resolves the clamp for a path. A trailing numeric segment means a coord component,
@@ -462,9 +462,7 @@ local function drawColorWidget(path, key, value)
 
     local isOverridden = currentOverrides()[path] ~= nil
     drawLabel(key, isOverridden)
-    if imgui.ColorEdit4('##' .. path, draft, bit.bor(ImGuiColorEditFlags_AlphaBar, ImGuiColorEditFlags_NoInputs)) then
-        draftColors[path] = draft
-    end
+    imgui.ColorEdit4('##' .. path, draft, bit.bor(ImGuiColorEditFlags_AlphaBar, ImGuiColorEditFlags_NoInputs))
     if imgui.IsItemDeactivatedAfterEdit() then
         commitOverride(path, floatsToHex(draft))
     elseif not imgui.IsItemActive() and currentOverrides()[path] == nil and not valuesEqual(draft, colorToFloats(value)) then
@@ -493,6 +491,7 @@ local function drawCoordWidget(path, key, value)
     local isOverridden = hasCoordOverride(path, value)
     drawLabel(key, isOverridden)
 
+    local anyActive = false
     for i = 1, #value do
         if i > 1 then
             imgui.SameLine()
@@ -511,15 +510,20 @@ local function drawCoordWidget(path, key, value)
         if changed then
             draft[i] = component[1]
         end
+        if imgui.IsItemActive() then
+            anyActive = true
+        end
         if imgui.IsItemDeactivatedAfterEdit() then
             draft[i] = clampValue(componentPath, draft[i])
-            commitOverride(componentPath, draft[i])
+            if draft[i] ~= value[i] then
+                commitOverride(componentPath, draft[i])
+            end
             draftCoords[path] = nil
             return
         end
     end
 
-    if not isOverridden then
+    if not isOverridden and not anyActive then
         for i = 1, #draft do
             draft[i] = value[i]
         end
@@ -687,9 +691,16 @@ function M.draw()
         return
     end
 
+    -- reg.isFallback: true while a stand-in layout is shown in place of the selected style.
+    if reg.isFallback and reg.isFallback() then
+        imgui.TextDisabled('The selected style failed to load; a fallback layout is shown.')
+        imgui.TextDisabled('Overrides cannot be edited until the style loads.')
+        return
+    end
+
     local overrides = currentOverrides()
     local hasOverrides = next(overrides) ~= nil
-    if imgui.Button('Reset All Overrides') and hasOverrides then
+    if imgui.Button('Reset all overrides') and hasOverrides then
         reg.clearOverrides()
         draftNumbers = {}
         draftCoords = {}

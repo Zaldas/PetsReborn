@@ -5,10 +5,10 @@
 -- overlap (e.g. ability 51 = Last Resort, spell 51 = Shell IV).
 
 return {
-    -- ── Warrior ───────────────────────────────────────────────────────────
-    -- Ability 52 fires as type-6 JA from Morrigan trust (and possibly WAR NPCs).
-    -- Applies BIND (11) to target mob; 60s observed duration matches mob-BIND baseline.
-    [52]  = 60,   -- Shockwave  → BIND (11), 60s est. [trust JA; confirmed statusId=11 in audit logs]
+    -- ── Beastmaster ───────────────────────────────────────────────────────
+    -- Ability 52 (LSB abilities.sql: Charm) also fires as a type-6 JA from the Morrigan trust,
+    -- applying BIND (11) to the target mob.
+    [52]  = 60,   -- Charm      → BIND (11) from Morrigan trust, 60s est.
 
     -- ── Monk ──────────────────────────────────────────────────────────────
     [39]  = 180,  -- Boost      (HorizonXI: 3 min, buff 45)

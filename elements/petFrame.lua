@@ -46,8 +46,8 @@ local anchorDirty = false
 local alignBottom = false
 local currentAlwaysShow = false
 
--- Visibility state: mp/tp only; recast sizing handled by module.getVisibleRowCount()
-local currentVis  = { showHp=true, showMp=true, showTp=true }
+-- Visibility state passed to relayout; recast sizing handled by module.getVisibleRowCount()
+local currentVis  = { showHp=true, showMp=true, showTp=true, hasMp=false, showDistance=false, showTimer=false }
 local lastVisHash = -1   -- -1 forces relayout on first update
 local lastRowCount = -1  -- -1 forces the recast re-pack on first update
 
@@ -56,11 +56,15 @@ local dragActive  = false
 local dragOffsetX = 0
 local dragOffsetY = 0
 
+-- Whether the background was drawn on the last update; the drag rect is live only while it is.
+local frameVisible = false
+
+-- nil while the frame is not initialized; every public entry point that draws is a no-op then.
 local layoutRef   = nil
 local posRegistry = {}
 local layoutOrder = {}
 
--- Status tooltip cache: [statusId] = { name, desc }
+-- Status tooltip cache: [statusId] = { label, desc }
 local statusTooltipCache = {}
 
 -- Mouse message IDs (Win32)
@@ -167,6 +171,7 @@ function petFrame.initialize(sprites, layout, anchor, isAlignBottom, scale, opts
     bg:pos(anchorX, renderY())
     bg:createPrimitives()
     bg:hide(VIS_TOKEN)
+    frameVisible = false
 
     coreModule.initialize(engine, layout, anchorX, renderY(), posRegistry, uiScale)
     statusEffectsModule.initialize(engine, layout, anchorX, renderY() + WIN_HEIGHT, uiScale, opts)
@@ -184,26 +189,12 @@ local function relayout(vis)
     for k in pairs(posRegistry) do posRegistry[k] = nil end
 
     for _, elemName in ipairs(layoutOrder) do
-        if elemName == 'name' then
-            if L.name then
-                posRegistry['name'] = { x = L.name.pos[1], y = L.name.pos[2], h = (L.name.txt.size or 12) + (L.name.marginBottom or 0) }
-            end
-
-        elseif elemName == 'hp' then
-            if vis.showHp and L.hp then
-                local a = Utils.resolveAnchor(L.hp.anchor, posRegistry)
-                posRegistry['hp'] = { x = a.x + L.hp.pos[1], y = a.y + L.hp.pos[2], h = L.hp.bar.imgFg.size[2] + (L.hp.marginBottom or 0) }
-            end
+        if coreModule.owns(elemName) then
+            coreModule.register(elemName, posRegistry, vis)
 
         elseif elemName == 'mp' then
             if activeModule and activeModule.relayout then
                 activeModule.relayout(posRegistry, vis)
-            end
-
-        elseif elemName == 'tp' then
-            if vis.showTp and L.tp then
-                local a = Utils.resolveAnchor(L.tp.anchor, posRegistry)
-                posRegistry['tp'] = { x = a.x + L.tp.pos[1], y = a.y + L.tp.pos[2], h = L.tp.bar.imgFg.size[2] + (L.tp.marginBottom or 0) }
             end
 
         elseif elemName == 'recast' then
@@ -257,7 +248,6 @@ local function relayout(vis)
     coreModule.finalizeLayout(posRegistry)
     applyAnchor()
 end
-petFrame.relayout = relayout
 
 -- Relayout with the current visibility state, for callers that have no vis table of their
 -- own. Modules reach this through package.loaded['elements/petFrame'] -- a top-level require
@@ -268,6 +258,7 @@ end
 
 -- Switch to a new type module. savedVis is the persisted recastVisible table for this type.
 function petFrame.switchModule(newType, savedVis)
+    if layoutRef == nil then return end
     -- The new module builds its rows with the pet-presence gate still closed, so the relayout
     -- below packs only the rows that survive it. update() opens the gate a moment later and the
     -- row-count check is what re-packs the rest -- but the count it compares against belongs to
@@ -332,10 +323,11 @@ local function backgroundVisible(tokens, rowCount)
     if tokens['pet.timerActive'] == true or tokens['pet.overloadActive'] == true then
         return true
     end
-    return tokens['ui.showRecasts'] ~= false and rowCount > 0
+    return rowCount > 0
 end
 
 function petFrame.update(tokens)
+    if layoutRef == nil then return end
     local newAlwaysShow = tokens['pet.alwaysShow'] == true
     if newAlwaysShow ~= currentAlwaysShow then
         currentAlwaysShow = newAlwaysShow
@@ -345,16 +337,24 @@ function petFrame.update(tokens)
         end
     end
 
+    -- distance and petTimer register only while their text bind shows them.
+    local L = layoutRef.petFrame
+    local showDistance = L.distance ~= nil and Utils.bindVisible(L.distance.txt.bind, tokens)
+    local showTimer    = L.petTimer ~= nil and Utils.bindVisible(L.petTimer.txt.bind, tokens)
     local h = (tokens['ui.showMpBar'] ~= false and 2 or 0)
             + (tokens['ui.showTpBar'] ~= false and 4 or 0)
             + (tokens['pet.mppActive'] == true  and 1 or 0)
+            + (showDistance and 8 or 0)
+            + (showTimer    and 16 or 0)
     if h ~= lastVisHash then
         lastVisHash = h
         currentVis = {
-            showHp = true,
-            showMp = tokens['ui.showMpBar'] ~= false,
-            showTp = tokens['ui.showTpBar'] ~= false,
-            hasMp  = tokens['pet.mppActive'] == true,
+            showHp       = true,
+            showMp       = tokens['ui.showMpBar'] ~= false,
+            showTp       = tokens['ui.showTpBar'] ~= false,
+            hasMp        = tokens['pet.mppActive'] == true,
+            showDistance = showDistance,
+            showTimer    = showTimer,
         }
         relayout(currentVis)
     end
@@ -375,13 +375,15 @@ function petFrame.update(tokens)
     -- Drawn after the row count is known, because in alwaysShow the row count is the only
     -- thing that decides whether the frame has anything in it.
     if bg then
-        if backgroundVisible(tokens, rowCount) then bg:show(VIS_TOKEN) else bg:hide(VIS_TOKEN) end
+        frameVisible = backgroundVisible(tokens, rowCount)
+        if frameVisible then bg:show(VIS_TOKEN) else bg:hide(VIS_TOKEN) end
     end
     statusEffectsModule.update(tokens)
     targetFrameModule.update(tokens)
 end
 
 function petFrame.getStatusAtPosition(mx, my)
+    if layoutRef == nil then return nil end
     return statusEffectsModule.getStatusAtPosition(mx, my)
 end
 
@@ -395,11 +397,11 @@ function petFrame.drawStatusTooltip(mouseX, mouseY)
             local name   = resMgr:GetString('buffs.names', hoveredStatus)
             local icon   = resMgr:GetStatusIconByIndex(hoveredStatus)
             local desc   = (icon and icon.Description and icon.Description[1]) or ''
-            info = { name = name or '???', desc = desc }
+            info = { label = string.format('%s (#%d)', name or '???', hoveredStatus), desc = desc }
             statusTooltipCache[hoveredStatus] = info
         end
         imgui.BeginTooltip()
-        imgui.Text(info.name .. ' (#' .. hoveredStatus .. ')')
+        imgui.Text(info.label)
         if info.desc ~= '' then imgui.Text(info.desc) end
         imgui.EndTooltip()
     end
@@ -407,10 +409,6 @@ end
 
 function petFrame.getActiveType()
     return activeType
-end
-
-function petFrame.getActiveModule()
-    return activeModule
 end
 
 function petFrame.getAnchor()
@@ -424,17 +422,20 @@ end
 function petFrame.setAnchor(x, y)
     anchorX = x
     anchorY = y
+    if layoutRef == nil then return end
     applyAnchor()
 end
 
 function petFrame.setAlignBottom(val)
     alignBottom = val == true
+    if layoutRef == nil then return end
     applyAnchor()
 end
 
 function petFrame.handleMouse(e)
+    if layoutRef == nil then return end
     if e.message == MSG_LBUTTON_DOWN then
-        if hitTest(e.x, e.y) then
+        if frameVisible and hitTest(e.x, e.y) then
             dragActive  = true
             dragOffsetX = e.x - anchorX
             dragOffsetY = e.y - anchorY
@@ -477,6 +478,15 @@ function petFrame.destroy()
         engine = nil
     end
     posRegistry = {}
+    layoutRef   = nil
+    -- handleMouse ignores LBUTTONUP while uninitialized, so a drag in progress ends here, and
+    -- its position is reported through getAnchor as a release would.
+    if dragActive then
+        anchorDirty = true
+    end
+    dragActive  = false
+    dragOffsetX = 0
+    dragOffsetY = 0
 end
 
 return petFrame

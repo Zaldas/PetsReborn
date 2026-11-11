@@ -1,7 +1,9 @@
 -- Physical JA debuffs (type 3): weapon-based player abilities that apply status effects
 -- server-side via addStatusEffect(). Fire as action type 3 (not type 6), so the normal
 -- abilityDurations path never fires for them.
--- Keyed by ability ID (action.Param). Applied when damage > 0 (hit confirmed).
+-- Keyed by ability ID (action.Param). Read on two paths: applyStatusOn applies the status
+-- when the message is in statusOnMes; applyPhysicalJaDebuff applies it on a damage message
+-- when damage > 0 (hit confirmed) and no timer is live.
 
 return {
     [46] = { statusId = 10, duration = 6 },   -- Shield Bash (PLD) → STUN (10), fixed 6s

@@ -1,7 +1,8 @@
 --[[
     spui/uiText.lua
     Wraps gdifonts.include font object as a uiElement.
-    Font rendering is handled automatically by gdifonts' own d3d_present callback.
+    Fonts are drawn by spui/sprites.lua's d3d_present handler, which calls gdi:render() after
+    the sprite pass.
 ]]
 
 local classes   = require('libs/spui/classes')
@@ -30,7 +31,7 @@ local function resolveAlign(layout)
 end
 
 -- FontFlags bitmask: bold=1, italic=2, underline=4, strikeout=8
--- bold defaults true to preserve existing behaviour for all layouts that don't specify it.
+-- Every flag defaults to off.
 local function resolveFontFlags(layout)
     local bold      = layout and layout.bold or false
     local italic    = layout and layout.italic    or false

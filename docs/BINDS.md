@@ -21,6 +21,8 @@ txt = {
 
 If `bind` is absent the element is created but never updated — it shows whatever was set at initialization (useful for purely static decorative elements).
 
+Binds are read on the elements themselves (`txt`, `bar`, `img`, `bg`), not on the section that holds them: a `bind` placed directly on `hp`, `mp`, `tp` or `recast` is ignored. `petFrame.maneuvers` and `petFrame.statusEffects` are the exceptions — their modules read a section-level `bind` with `visible` / `visibleAnd` only (maneuvers: see below). Recast rows take no `bind`; they follow the `ui.showRecasts` setting.
+
 ---
 
 ## Bind Keys
@@ -186,7 +188,7 @@ Thresholds are checked in order; first `value < below` wins. If none match, text
 | `colorValue`   | ✓      | ✓     | —       | —            |
 | `defaultColor` | optional | ✓   | —       | —            |
 
-> **Note — img/bg dynamic binds:** `uiImage` and `uiBackground` currently support only `visible`/`visibleAnd`. Dynamic binding (path, color, opacity from tokens) is a planned future expansion.
+> **Note — img/bg dynamic binds:** `uiImage` and `uiBackground` support only `visible`/`visibleAnd`; path, color and opacity cannot be bound to tokens.
 
 ---
 
@@ -196,7 +198,6 @@ Thresholds are checked in order; first `value < below` wins. If none match, text
 hp = {
     anchor = 'name.bottom',
     pos    = {0, 0},
-    bind   = { visible = 'pet.active' },       -- section-level: hides bar+text together
     thresholds = {
         { below = 0.25, color = '#FC8182FF' },
         { below = 0.50, color = '#F8BA80FF' },
@@ -435,30 +436,51 @@ timer = {
     align       = 'right',
     pos         = {55, 5},
     zOrder      = 6,
-    thresholds  = {
-        { below = 0.01, color = '#66FF66FF' },  -- ready
-        { below = 0.30, color = '#FFBB44FF' },  -- nearly ready
-    },
 },
 ```
 
 The timer has no `bind`. `color` is the neutral countdown colour and is the only colour
 `recastRows` reads from the layout.
 
-The ready and warn colours are fixed in `modules/recastRows.lua` and are **not** layout keys.
-`thresholds` here is **not read** — the ramp cannot express this timer's states, because
+The ready and warn colours are fixed in `modules/recastRows.lua` and are **not** layout keys,
+and the timer takes no `thresholds` table — the ramp cannot express this timer's states, because
 `pet.<slot>.norm` is `0` for every non-charge ability whether or not it is ready, so a
 `below` entry would colour a full cooldown as ready. Readiness is taken from the
-`pet.<slot>.ready` flag instead, and `norm` (fraction of the recast *remaining*) only
+`pet.<slot>.ready` flag instead, and `norm` (fraction of the charge recast *remaining*) only
 carries a real value for charge abilities.
 
 | State | Colour | Source |
 |-------|--------|--------|
 | ready | green  | `COLOR_READY`, module constant |
-| `norm > 0.70` (just used, charge abilities) | orange | `COLOR_WARN`, module constant |
+| `norm > 0.70`: charge just spent (more than 70% of the charge recast remaining) | amber | `COLOR_WARN`, module constant |
 | every other state, and heal-timer rows | `color` | layout |
 
 Each pet type builds its own recast rows, so `color` is re-read per pet type.
+
+### `charges` -- charge pips and count
+
+```lua
+charges = {
+    pip = {
+        path       = 'layouts/assets/ffxi/pip.png',
+        size       = {11, 11},
+        pos        = {110, 5},      -- first pip, from the row origin
+        offset     = {10, 0},       -- step from one pip to the next
+        color      = '#A0C8FFFF',   -- charge available
+        colorEmpty = '#282848FF',   -- charge spent
+        zOrder     = 5,
+    },
+    txt = {                         -- optional 'charges/max' count
+        font = 'Grammara', size = 9, color = '#A0C8FFFF',
+        align = 'right', pos = {175, 2}, zOrder = 6,
+    },
+},
+```
+
+Drawn only on the rows of charge abilities (`maxCharges > 0`; the jug pet's Ready). `pip` draws
+one pip per charge, `txt` prints `charges/maxCharges`. Both sub-tables are optional, take no
+`bind`, and position from the row origin like `txt` and `timer`. The shipped layouts use `pip`
+only.
 
 ---
 
@@ -483,8 +505,21 @@ overload = {
 
 `raisedOffset` is applied only while `pet.specialActive`, lifting the label one line clear of the
 2hr text so the two stack instead of overlapping. Absent means the label never leaves the 2hr slot.
-It moves the text only -- section extras (`img`/`bg`) are positioned once at create and never
-repositioned.
+Section extras (`img`/`bg`) move with the text.
 
 **Invariant:** `overload.pos + txt.pos` must equal `special.pos + txt.pos`. Both elements resolve
 from the same base, so moving one without the other makes them silently drift apart.
+
+---
+
+## Status Effect Keys (`petFrame.statusEffects`)
+
+### `iconSet` -- icon folder
+
+```lua
+iconSet = 'XIView',
+```
+
+Optional; default `'XIView'`. Names a folder under `libs/status/icons/`; the shipped sets are
+`XIView`, `HD`, `HD2` and `RadialArcana`. A name with no matching folder prints a chat warning
+and falls back to `XIView`.

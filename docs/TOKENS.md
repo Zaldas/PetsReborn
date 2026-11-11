@@ -4,23 +4,23 @@
 
 ## The Short Version
 
-**You don't need to read this document to create a style.** Each layout file (`ffxi.lua`, `xiv.lua`)
-is a complete self-contained table. Copy one, change what you want, save it as a new file in
-`layouts/`, then select it in the config window (`/pr`).
+**You don't need to read this document to create a style.** Create a new file in `layouts/`
+that `extends` an existing style, list only the keys you want to change, then select it in the
+config window (`/pr`). Everything you leave out is inherited.
 
 ```lua
--- layouts/myStyle.lua — a complete, valid style with no token knowledge required
+-- layouts/myStyle.lua — a valid style with no token knowledge required
 return {
-    petWindow = {
+    extends = 'ffxi',
+    petFrame = {
         name = {
-            font = 'Arial', size = 18,
-            color = '#FFFF00FF',              -- yellow name text
+            txt = { font = 'Arial', size = 18, color = '#FFFF00FF' },  -- yellow name text
         },
         hp = {
             bar = {
-                imgBar = { color = '#FF4444FF' },  -- red HP bar
+                imgBar = { color = '#FF4444FF' },  -- red HP bar; path, size, pos inherited
             },
-            thresholds = {                         -- custom threshold colors
+            thresholds = {                         -- a full list replaces ffxi's ramp
                 { below = 0.25, color = '#FF0000FF' },
                 { below = 0.50, color = '#FF8800FF' },
             },
@@ -28,6 +28,9 @@ return {
     },
 }
 ```
+
+The merge rules (full lists replace, other tables patch key by key) are in
+[README.md "Customising a layout"](../README.md#customising-a-layout).
 
 ---
 
@@ -54,22 +57,21 @@ All multi-word token segments use **camelCase** — not underscores.
 
 ## How Styles Work
 
-Layout files are loaded directly — no base+override merging. Each file is complete.
+A style is a file in `layouts/` returning a table. `loadLayout` in `PetsReborn.lua` runs the
+selected style's file; when the table has an `extends` key, the named style is resolved first
+(following its own `extends`) and `mergeLayout` merges the child over it:
 
-```lua
--- petsreborn.lua
-local function loadLayout()
-    local styleName = prSettings.layout or 'ffxi'
-    local layoutPath = addon.path .. 'layouts/' .. styleName .. '.lua'
-    if not ashita.fs.exists(layoutPath) then
-        layoutPath = addon.path .. 'layouts/ffxi.lua'
-    end
-    local fn = loadfile(layoutPath)
-    ...
-end
-```
+- a value that is not a table (`false` included) replaces the parent's;
+- a table with a `[1]` entry (a full list: `pos`, `size`, `anchor`, `thresholds`,
+  `sliceBorder`, `elementColors`) replaces the parent's value whole;
+- any other table (named keys, sparse patches such as `{[5] = x}` or `{nil, 4}`, `{}`)
+  patches a copy of the parent's value key by key, by these same rules.
 
-`deepMerge` still exists in `utils.lua` but is not used during style loading.
+The `extends` key is removed from the result, and every table in it is a fresh copy. A file
+without `extends` is a complete layout. Inherited keys cannot be removed. If the selected style
+or any style it extends fails to load (missing file, error, `extends` cycle), the error is
+printed and `ffxi` is used; if `ffxi` fails too, no pet window is drawn. Layout editor
+overrides are applied on top of the merged result.
 
 ---
 
@@ -90,9 +92,8 @@ Registered anchors (populated at init, updated during relayout):
 - `hp` — HP bar origin (registered if `hp` section present)
 - `mp` — MP bar origin (avatar, automaton and charm; nil when MP hidden or type inactive)
 - `tp` — TP bar origin (nil when TP hidden or `tp` section absent)
-- `name` — pet name row (registered if `name` section present)
-- `distance` — distance readout (registered if `distance` section present)
-- `petTimer` — 2hr/familiar countdown timer (registered if `petTimer` section present)
+- `distance` — distance readout (registered only while its `txt` bind shows it; while hidden, an anchor to it falls through to its next fallback, or the window origin (0, 0) when none is left)
+- `petTimer` — 2hr/familiar countdown timer (registered only while its `txt` bind shows it; while hidden, an anchor to it falls through to its next fallback, or the window origin (0, 0) when none is left)
 - `special` — 2hr banner label (registered if `special` section present)
 - `overload` — PUP Overload banner (registered if `overload` section present)
 - `maneuvers` — PUP maneuver column origin (nil when the column is switched off)
@@ -113,7 +114,6 @@ The `bind` sub-table can appear on any element definition. All fields are option
 ```lua
 hp = {
     pos  = {90, -7},
-    bind = { visible = 'pet.active' },    -- composite-level visibility
     thresholds = { ... },                  -- shared by children
     bar = {
         bind = {
@@ -184,7 +184,9 @@ they define their own.
 
 ## Token Catalog
 
-All tokens are always present with safe defaults (never nil). Types:
+While the frame is shown, every token below is present with a safe default (never nil). While
+it is hidden (cutscene, map, zoning) the renderers receive only `pet.active` and `pet.alwaysShow`,
+both `false`. Types:
 - **bool** — `true` or `false`
 - **number** — integer or float
 - **string** — text content
@@ -200,7 +202,7 @@ All tokens are always present with safe defaults (never nil). Types:
 | `pet.serverId` | number | Pet entity server ID; `0` when inactive |
 | `pet.type` | string | `'avatar'` \| `'charm'` \| `'jug'` \| `'wyvern'` \| `'automaton'` \| `''` |
 | `pet.name` | string | Entity name — e.g. `'Carbuncle'`, `'Wyvern'` |
-| `pet.level` | string | Pet level — e.g. `'75'`. Empty string when unknown. Charm: real mob level from `/check` packet. All others: player main job level |
+| `pet.level` | string | Pet level — e.g. `'75'`. Empty string when unknown. Charm: real mob level from `/check` packet. Jug: player main job level. Avatar, wyvern, automaton: level of the job that owns the pet (main or sub) |
 | **HP (percent family — source: `pet.HPPercent` entity field)** | | |
 | `pet.hpp` | number 0–100 | HP percent integer |
 | `pet.hppNorm` | number 0–1 | HP normalized (hpp / 100). **`1.0` when `outOfRange`** |
@@ -283,8 +285,8 @@ equipped attachment ability.
 | Token | Resolves to |
 |-------|------------|
 | `pet.recast[N].name` | e.g. `avatar.recast[N].name` for current type |
-| `pet.recast[N].time` | Formatted timer string, or `'Ready'` |
-| `pet.recast[N].norm` | 0–1 progress (0 = freshly used, 1 = ready) |
+| `pet.recast[N].time` | Formatted timer string, `'Ready'`, or `'??'` while recast memory is unavailable (`ready` is then false) |
+| `pet.recast[N].norm` | 0–1 fraction of the next charge's recast remaining: 1 = a charge was just spent, 0 = all charges full. Non-zero while any charge recharges, even with charges usable; 0 for non-charge abilities |
 | `pet.recast[N].ready` | bool |
 | `pet.recast[N].charges` | int (0 for non-charge abilities) |
 | `pet.recast[N].maxCharges` | int (0 for non-charge abilities) |
@@ -294,6 +296,9 @@ The same seven keys exist under each type's own prefix -- `avatar.recast[N].name
 `jug.recast[N].charges` and so on -- for every type, whether or not that type ever populates
 them. The per-type sections below list only what is specific to each; they do not re-list the
 key set.
+
+Per-type keys resolve on read and are not stored in the token table: `pairs()`/`next()` do not
+enumerate them, and writing one shadows the resolved value -- treat them as read-only.
 
 ---
 
@@ -317,7 +322,7 @@ move up.
 | `jug.name` | string | Jug pet name (e.g. `'CourierCarrie'`) |
 | `jug.remaining` | string | `'45:30'` countdown — formatted via `_formatTimer` |
 | `jug.remainingNorm` | number 0–1 | `remaining / duration` |
-| `jug.elapsed` | string | `''` (not implemented in v1) |
+| `jug.elapsed` | string | always `''` |
 | `jug.expired` | bool | `true` when `os.time() >= expireTime` |
 
 Ready is a charge ability: it is the only jug row where `charges`/`maxCharges` are non-zero
@@ -337,8 +342,8 @@ move up.
 | `charm.known` | bool | Duration was calculated from mob level check |
 | `charm.remaining` | string | `'12:30'` or `'??'` if unknown |
 | `charm.remainingNorm` | number 0–1 | `remaining / totalDuration`; 0 when unknown |
-| `charm.elapsed` | string | `''` (not implemented in v1) |
-| `charm.urgent` | bool | `true` when remaining < 60 seconds |
+| `charm.elapsed` | string | always `''` |
+| `charm.urgent` | bool | `true` when the duration is known and remaining < 60 seconds |
 
 Stay is a display-only row -- its `time` is `''` and the renderer reads `bst.stayTicks`
 instead. No charm row is a charge ability.
@@ -401,7 +406,8 @@ Every gate is filtered behind the automaton's 3s decision tick, so a row can rea
 to 3s before the automaton acts on it.
 
 `norm` is 0 on these rows, as it is on every plain ability recast, so they colour white while
-counting and green at `'Ready'` rather than running the charge-ability warn ramp.
+counting and green at `'Ready'`. They never turn amber, which marks a charge just spent (more than
+70% of the charge recast remaining).
 
 A gate only counts down from a use the addon saw, so one that has never fired reads `'Ready'`.
 An automaton picked up mid-fight -- addon loaded, or a zone line -- may really be mid-gate; its
@@ -439,9 +445,9 @@ Column-wide tokens:
 | Token | Type | Value |
 |-------|------|-------|
 | `pet.maneuverCount` | number | Maneuvers active across all eight elements combined |
-| `pet.maneuverRecast` | string | Formatted shared-recast timer, or `'Ready'` |
-| `pet.maneuverRecastNorm` | number 0-1 | Recast progress (1 = ready) |
-| `pet.maneuverReady` | bool | Shared recast is 0 |
+| `pet.maneuverRecast` | string | Formatted shared-recast timer, `'Ready'`, or `'??'` while recast memory is unavailable |
+| `pet.maneuverRecastNorm` | number 0-1 | Fraction of the recast remaining (1 = just used, 0 = ready or unknown) |
+| `pet.maneuverReady` | bool | Shared recast is 0; `false` while recast memory is unavailable |
 | `pet.maneuverUsable` | bool | `false` while Overload is up |
 | `pet.overloadActive` | bool | Overload is on the player |
 | `pet.overloadLabel` | string | `'OVERLOAD'` |
@@ -465,7 +471,7 @@ window and re-anchors on the first report after it drops.
 
 ### UI Visibility Tokens
 
-Injected by `petsreborn.lua` after `buildTokenTable()`. Values come directly from
+Injected by `PetsReborn.lua` after `buildTokenTable()`. Values come directly from
 `prSettings` — they are not part of the game state and cannot be set from style files.
 
 | Token | Type | Source |
@@ -476,13 +482,13 @@ Injected by `petsreborn.lua` after `buildTokenTable()`. Values come directly fro
 | `ui.showTargetBar` | bool | `prSettings.showTargetBar` — hides target sub-window |
 | `ui.showManeuvers` | bool | `prSettings.showManeuvers` -- hides the PUP maneuver column |
 | `pet.statusActive` | bool | `true` when pet has active status effects OR `hideStatusWhenEmpty == false` |
+| `pet.statusIds`, `pet.statusTimes` | table | The pet's status ids and their expiry times, read by the status strip. Not bindable |
 | `pet.alwaysShow` | bool | Computed: `alwaysShow==true AND no active pet AND valid job` |
 
 These tokens drive module-level visibility decisions. `ui.showRecasts = false` overrides all
 per-ability `recastVisible` settings — the whole recast section disappears.
 
-The layout `bind.visible = 'ui.showRecasts'` on the `recast` section is the canonical way to
-declare this in style files; the actual gating is enforced in each type module's `update()`.
+The `recast` section takes no `bind`: `modules/recastRows.lua` reads `ui.showRecasts` directly.
 
 ---
 
@@ -498,28 +504,28 @@ declare this in style files; the actual gating is enforced in each type module's
 
 ### Minimal: Colors Only
 
-Omitting sections entirely is valid — those elements simply won't render.
+Every section and key left out is inherited from `ffxi`, so the file lists colours only.
 
 ```lua
 -- layouts/darkTheme.lua
 return {
-    petWindow = {
-        name = { color = '#FFD700FF', size = 16 },
+    extends = 'ffxi',
+    petFrame = {
+        name = { txt = { color = '#FFD700FF', size = 16 } },
         hp = {
             bar = { imgBar = { color = '#CC2222FF' } },
-            thresholds = {
+            thresholds = {                      -- full list: replaces ffxi's three entries
                 { below = 0.20, color = '#FF0000FF' },
                 { below = 0.40, color = '#FF6600FF' },
             },
         },
         mp = { bar = { imgBar = { color = '#2266CCFF' } } },
         tp = {
-            bar          = { imgBar = { color = '#44AA44FF' } },
-            tpFullColor  = '#88FF88FF',
+            bar = { imgBar = { color = '#44AA44FF' }, tpFullColor = '#88FF88FF' },
         },
-        -- recast, stay, statusEffects omitted → those elements not rendered
+        -- recast, statusEffects, maneuvers, ... inherited unchanged
     },
-    targetBar = {
+    targetFrame = {
         hp = { bar = { imgBar = { color = '#CC2222FF' } } },
     },
 }
@@ -527,17 +533,26 @@ return {
 
 ### Advanced: Data Remapping
 
-Show TP in the MP slot (e.g., when you want a visible TP bar for jug/charm types
-without MP that still have the MP slot position available in the layout):
+A child `bind` merges key by key like any other table: the keys it lists replace the parent's,
+and every other key — `visible` and `visibleAnd` included — is inherited.
 
 ```lua
-mp = {
-    bar = {
-        imgBar = { color = '#8EB4F9FF' },
-        bind   = { value = 'pet.tpNorm' },    -- fill from TP instead of MP
+-- layouts/remap.lua
+return {
+    extends = 'ffxi',
+    petFrame = {
+        -- TP text as a percentage. visible/visibleAnd are inherited, so the text
+        -- still shows only while a pet is out and the TP bar is enabled.
+        tp = { txt = { bind = { value = 'pet.tpPct' } } },
+        -- Distance readout only beyond 20 yalms: the inherited visible = 'pet.active'
+        -- stays, visibleAnd is added.
+        distance = { txt = { bind = { visibleAnd = 'pet.distFar' } } },
     },
-},
+}
 ```
+
+To change when an element shows, set `visible`/`visibleAnd` explicitly; changing only
+`value` keeps the parent's visibility rule.
 
 ---
 
@@ -545,7 +560,7 @@ mp = {
 
 | Original | Actual |
 |---|---|
-| `layouts/default.lua` + deep merge | Each style file is standalone; no default.lua |
+| `layouts/default.lua` + deep merge | No default.lua; a style either is complete or names a parent with `extends` and lists only its changes |
 | Token names use `_` separators | Token names use camelCase |
 | `pet.timer_active` | `pet.timerActive` |
 | `pet.hp_color` (virtual color token) | Not implemented; use `bind.color = 'threshold'` |

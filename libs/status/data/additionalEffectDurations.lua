@@ -3,7 +3,7 @@
 -- weapon En-spell procs, etc.) where no spell ID is available for lookup.
 --
 -- Weapon skill secondary effects (Armor Break, Shield Break, etc.) go through
--- the main ability.Message path and are handled by spellToExpiry instead.
+-- the main ability.Message path and are not looked up here.
 --
 -- Sources:
 --   BG Wiki   https://www.bg-wiki.com/ffxi/Defense_Down
@@ -32,7 +32,7 @@ return {
 
     -- ── Blood pact physical additional effects ─────────────────────────────
     -- Carbuncle: Poison Nails → Poison (if addStatusEffect comes through as AdditionalEffect)
-    [3]   = 30,   -- Poison          [mobs.lua xi.mob.ae.POISON maxDuration: 30s; Poison Nails: 60s — see abilityDurations]
+    [3]   = 30,   -- Poison          [mobs.lua xi.mob.ae.POISON maxDuration: 30s; Poison Nails: 60s — see bloodPactDebuffs]
 
     -- ── Mob melee additional effects (xi.mob.ae table from mobs.lua) ──────
     -- Applied when a mob has ADD_EFFECT set and lands a standard melee hit.
