@@ -1,4 +1,4 @@
--- Copied byte-identical across addons; keep it free of addon-specific code.
+-- Shared theme module; keep it free of addon-specific code.
 local imgui = require('imgui')
 
 local M = {}
