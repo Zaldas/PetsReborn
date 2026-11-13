@@ -71,6 +71,7 @@ return {
     [427 ] = { statusId = 137, duration = 180 },  -- Tremors              → DEX_DOWN (137) [tremors.lua]
     [442 ] = { statusId = 136, duration = 180 },  -- Bubble Shower        → STR_DOWN (136) [bubble_shower.lua]
     [450 ] = { statusId = 136, duration = 180 },  -- Aqua Ball            → STR_DOWN (136) [aqua_ball.lua]
+    [462 ] = { statusId = 136, duration = 180 },  -- Maelstrom            → STR_DOWN (136), LSB 180 uncaptured [maelstrom.lua]
     [463 ] = { statusId = 138, duration = 120 },  -- Whirlwind            → VIT_DOWN (138) [whirlwind.lua]
     [466 ] = { statusId = 3,   duration = 300 },  -- Poison Breath        → POISON (3) [poison_breath_hound.lua]
     [469 ] = { statusId = 5,   duration = 30  },  -- Shadow Claw          → BLINDNESS (5) [shadow_claw.lua]

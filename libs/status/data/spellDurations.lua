@@ -63,7 +63,7 @@ return {
     [458] = 60,  [459] = 60,  [460] = 60,  [461] = 60,  -- Threnody I-VIII
     [871] = 90,  [872] = 90,  [873] = 90,  [874] = 90,
     [875] = 90,  [876] = 90,  [877] = 90,  [878] = 90,  -- Threnody II I-VIII
-    [421] = 120, [422] = 180, [423] = 240, -- Battlefield / Carnage / Massacre Elegy  (423 trust-only; extrapolated, LSB enfeebling_song.lua has 180)
+    [421] = 120, [422] = 180, [423] = 180, -- Battlefield / Carnage / Massacre Elegy  (423 trust-only; LSB 180)
     [376] = 30,  [463] = 30,              -- Horde Lullaby / Foe Lullaby
     [377] = 60,  [471] = 60,              -- Horde Lullaby II / Foe Lullaby II
     [472] = 120,                          -- Pining Nocturne

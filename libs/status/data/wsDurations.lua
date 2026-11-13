@@ -7,7 +7,7 @@ return {
     [83]  = { statusId  = 149, duration = 180 },          -- Armor Break     → Defense Down
     [181] = { statusId  = 149, duration = 180 },          -- Shell Crusher   → Defense Down
     [85]  = { statusId  = 147, duration = 180 },          -- Weapon Break    → Attack Down
-    [87]  = { statusIds = { 149, 147 }, duration = 180 }, -- Full Break      → Defense + Attack Down
+    [87]  = { statusIds = { 149, 147, 146, 148 }, duration = 90 }, -- Full Break → Defense, Attack, Accuracy, Evasion Down; 60 + 3*TP/100: 90 at 1000 TP, 150 at 3000
     [80]  = { statusId  = 148, duration = 180 },          -- Shield Break    → Evasion Down
     [107] = { statusId  = 147, duration = 180 },          -- Infernal Scythe → Attack Down
     [35]  = { statusId  = 10,  duration = 5   },          -- Flat Blade      → Stun

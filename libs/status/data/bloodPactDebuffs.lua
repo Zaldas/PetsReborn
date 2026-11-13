@@ -18,6 +18,7 @@ return {
     [513] = { statusId = 3,  duration = 60  },  -- Poison Nails  (Carbuncle) → Poison (3),      60s  [physical hit]
     [528] = { statusId = 5,  duration = 30  },  -- Moonlit Charge(Fenrir)    → Blindness (5),   30s  [physical hit]
     [529] = { statusId = 4,  duration = 90  },  -- Crescent Fang (Fenrir)    → Paralysis (4),   90s  [physical hit]
+    [567] = { statusId = 10, duration = 4   },  -- Geocrush      (Titan)     → Stun (10),        4s  [physical hit; geocrush.lua]
     [578] = { statusId = 12, duration = 120 },  -- Tail Whip     (Leviathan) → Weight (12),    120s  [physical hit, resist-scaled]
     [624] = { statusId = 10, duration = 2   },  -- Shock Strike  (Ramuh)     → Stun (10),        2s  [physical hit]
     [627] = { statusId = 4,  duration = 60  },  -- Thunderspark  (Ramuh)     → Paralysis (4),   60s  [physical hit; thunderspark.lua]

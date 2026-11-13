@@ -6,9 +6,8 @@
 
 return {
     -- ── Beastmaster ───────────────────────────────────────────────────────
-    -- Ability 52 (LSB abilities.sql: Charm) also fires as a type-6 JA from the Morrigan trust,
-    -- applying BIND (11) to the target mob.
-    [52]  = 60,   -- Charm      → BIND (11) from Morrigan trust, 60s est.
+    -- A Charm that fails on an uncharmable mob binds it instead (msg 127, Param = BIND).
+    [52]  = 5,    -- Charm → BIND (11), random 1-5s; max [job_utils/beastmaster.lua attemptCharm]
 
     -- ── Monk ──────────────────────────────────────────────────────────────
     [39]  = 180,  -- Boost      (HorizonXI: 3 min, buff 45)

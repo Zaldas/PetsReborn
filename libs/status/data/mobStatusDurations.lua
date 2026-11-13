@@ -30,7 +30,7 @@ local selfBuffs = {
     [55]  = 30,   -- Astral Flow     (SMN 2hr)
     [126] = 30,   -- Spirit Surge    (DRG 2hr)
     [163] = 45,   -- Azure Lore      (BLU 2hr)  [azure_lore.lua: 45]
-    [283] = 30,   -- Perfect Defense (special boss ability; e.g. Absolute Virtue)
+    [283] = 10,   -- Perfect Defense (Alexander low-HP) [perfect_defense.lua: 10]
 
     -- ── Offensive self-buffs ───────────────────────────────────────────────
     [45]  = { default=60, [1377]=5, [580]=180 },    -- Boost  [quake_stomp 1746/1899: 60 (default); fluorescence 1377: 5; fantod 580: 180]
@@ -71,13 +71,13 @@ local selfBuffs = {
     [606] = 180,  -- Clod Spikes     [earth elemental/arcana mobs: 180]
 
     -- ── En-spells (elemental weapon coat) ─────────────────────────────────
-    -- All standard blade WS variants use 30s. heat_barrier.lua is an outlier at 300s for Enfire.
-    [94]  = 30,   -- Enfire          [fire_blade: 30; heat_barrier outlier: 300]
-    [95]  = 30,   -- Enblizzard      [frost_blade: 30]
-    [96]  = 30,   -- Enaero          [wind_blade_kam: 30]
-    [97]  = 30,   -- Enstone         [earth_blade: 30]
-    [98]  = 30,   -- Enthunder       [lightning_blade: 30]
-    [99]  = 30,   -- Enwater         [water_blade: 30]
+    -- Kam'lanaut blade skills use 1800s (until replaced or dispelled). heat_barrier.lua gives Enfire 300s.
+    [94]  = 1800, -- Enfire          [fire_blade: 1800, until replaced or dispelled; heat_barrier outlier: 300]
+    [95]  = 1800, -- Enblizzard      [frost_blade: 1800, until replaced or dispelled]
+    [96]  = 1800, -- Enaero          [wind_blade_kam: 1800, until replaced or dispelled]
+    [97]  = 1800, -- Enstone         [earth_blade: 1800, until replaced or dispelled]
+    [98]  = 1800, -- Enthunder       [lightning_blade: 1800, until replaced or dispelled]
+    [99]  = 1800, -- Enwater         [water_blade: 1800, until replaced or dispelled]
     [288] = 30,   -- Endark          [dark_blade/dark_weapon: 30]
     [274] = 30,   -- Enlight         [light_weapon: 30]
 
@@ -131,9 +131,6 @@ local selfBuffs = {
     [5]   = 180,  -- Blindness   [Blind / Blind II: 180s each]
     [12]  = 180,  -- Weight      [Gravity=120s, Gravity II=180s — use max]
     [13]  = 180,  -- Slow        [Slow / Slow II: 180s each]
-    [128] = 90,   -- Burn        [elemental DoT debuff: 90s]
-    [134] = 120,  -- Dia         [Dia=60s, Dia II=120s — use max]
-    [135] = 120,  -- Bio         [Bio=60s, Bio II=120s — use max]
     [156] = 12,   -- Flash       [PLD Flash spell: 12s]
     [192] = 160,  -- Requiem     [Foe Requiem I=64s … VII=160s — use max]
     [194] = 180,  -- Elegy       [Battlefield Elegy=120s, Carnage Elegy=180s — use max]
@@ -232,7 +229,6 @@ return {
         [686] = 30,   -- Slumber Powder  → SLEEP_I (2)           fixed 30s [slumber_powder.lua]
 
         -- ── Dhalmel ───────────────────────────────────────────────────────────
-        [462] = 120,  -- Maelstrom       → STR_DOWN (136)        fixed 120s [maelstrom.lua]
         [284] = 60,   -- Cold Stare      → SILENCE (6)           fixed 60s [cold_stare.lua] (Troglodyte Dhalmel)
 
         -- ── Dragon ────────────────────────────────────────────────────────────
@@ -267,7 +263,7 @@ return {
         [1117] = 300, -- Lead Breath     → WEIGHT (12)           fixed 300s [lead_breath.lua]
 
         -- ── Diabolos (Dreams / Dynamis) ───────────────────────────────────────
-        [558] = 30,   -- Nightmare       → SLEEP_I (2)           random 20-30s; max [nightmare.lua]
+        [558] = 30,   -- Nightmare       → SLEEP_I (2)           30s Horizon in-game; LSB 90 [nightmare.lua]
 
         -- ── Leech ─────────────────────────────────────────────────────────────
         [436] = 180,  -- Gloeosuccus     → SLOW (13)             fixed 180s [gloeosuccus.lua]
@@ -326,7 +322,7 @@ return {
         [332] = 60,   -- Entangle        → BIND (11)             fixed 60s [entangle.lua]
 
         -- ── Undead ────────────────────────────────────────────────────────────
-        [474] = 300,  -- Fear Touch      → SLOW (13)             fixed 300s [fear_touch.lua]
+        [474] = 300,  -- Fear Touch      → SLOW (13)             LSB applies no effect; 300 unsourced [fear_touch.lua]
         [475] = 90,   -- Terror Touch    → ATTACK_DOWN (147)     fixed 90s [terror_touch.lua]
         [476] = 2280, -- Curse           → CURSE_I (9)           fixed 2280s (NM-only) [curse.lua]
         [490] = 660,  -- Undead Mold     → DISEASE (8)           fixed 660s [undead_mold.lua]
@@ -359,7 +355,9 @@ return {
                       -- Dice Slow: SLOW(13)=120s, SLEEP_I(2)=30s [dice_slow.lua]
 
         -- ── Snoll / Bomb (Campaign) ──────────────────────────────────────────
-        [1646] = 60,  -- cold_wave       → FROST (129)           fixed 60s [cold_wave.lua]
+        [528]  = 180, -- cold_wave       → FROST (129)           fixed 180s [cold_wave.lua] (Snoll)
+        [600]  = 180, -- cold_wave       → FROST (129)           fixed 180s [cold_wave.lua] (Snoll Tzar)
+        [1646] = 180, -- cold_wave       → FROST (129)           fixed 180s [cold_wave.lua]
 
         -- ── Wolf / Hound ──────────────────────────────────────────────────────
         [465] = 60,   -- howling         → PARALYSIS (4)         fixed 60s [howling.lua]
@@ -493,7 +491,6 @@ return {
         [2101] = 90,  -- Demoralizing Roar → ATTACK_DOWN (147)   TP-based max [demoralizing_roar.lua]
 
         -- ── Crawler / Leech (additional POISON) ───────────────────────────────
-        [811]  = 120, -- Acid Spray      → POISON (3)            fixed 120s [acid_spray.lua]
         [415]  = 120, -- Acid Mist       → ATTACK_DOWN (147)     fixed 120s [acid_mist.lua]
 
         -- ── Uragnite ──────────────────────────────────────────────────────────
@@ -554,7 +551,7 @@ return {
         [1882] = 180, -- Frightful Roar  → DEFENSE_DOWN (149)    fixed 180s [frightful_roar.lua]
 
         -- ── Diremite / Diamond (Sea Monk) ─────────────────────────────────────
-        [1908] = 30,  -- Nightmare       → SLEEP_I (2)           random 20-30s; max [nightmare.lua]
+        [1908] = 30,  -- Nightmare       → SLEEP_I (2)           30s Horizon in-game; LSB 90 [nightmare.lua]
         [1919] = 60,  -- Daydream        → CHARM_I (14)          60s [unimplemented in LSB SQL; observed in-game]
 
         -- ── Mimic / Box (Dynamis / ToAU) ──────────────────────────────────────
