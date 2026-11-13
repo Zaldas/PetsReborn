@@ -188,7 +188,10 @@ function uiText:opacity(v)
 end
 
 function uiText:dispose()
-    if not self.isEnabled then return end
+    if not self.isEnabled then
+        self.super:dispose()  -- releases the uiElement private entry, created even when disabled
+        return
+    end
 
     if self.isCreated and self.fontObj then
         gdi:destroy_object(self.fontObj)

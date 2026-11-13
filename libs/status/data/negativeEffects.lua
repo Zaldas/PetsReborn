@@ -9,7 +9,7 @@
 -- Source: LSB data/status_effects.yaml `negative`. Not taken from it:
 --   Bio/Dia (134/135)  the spell scripts delete each other by tier; owned by bioDiaData
 --   Sleep (2/193->19)  every sleep is server status 2 and 19 is a client-side remap; owned
---                      by spellMeta and the sleep-family wear-off handling
+--                      by recordStatus and removeStatusFamily in statustracker.lua
 --   En-spells (->51)   already covered by the `en` exclusion group
 --   Kaustra/Embrava    (23/228) are post-75 effects and not tracked
 

@@ -89,9 +89,15 @@ end
 function uiBar:update()
     if not self.isEnabled then return end
 
-    if self.currentValue ~= self.value then
+    -- currentValue is rounded to 3 decimals, so compare it against the equally rounded target
+    local roundedValue = utils:round(self.value, 3)
+    if self.currentValue ~= roundedValue then
         self.exactValue = self.exactValue + (self.value - self.exactValue) * self.animSpeed
         self.exactValue = math.min(math.max(self.exactValue, 0), 1)
+        -- snap within half a rounding step so a target on a .xxx5 boundary still settles
+        if math.abs(self.value - self.exactValue) < 0.0005 then
+            self.exactValue = self.value
+        end
         self.currentValue = utils:round(self.exactValue, 3)
 
         if self.imgBar then
@@ -100,7 +106,7 @@ function uiBar:update()
     end
 
     -- Signal to parent container whether this bar needs to keep running next frame.
-    self._isAnimating = self.alwaysUpdate or (self.currentValue ~= self.value)
+    self._isAnimating = self.alwaysUpdate or (self.currentValue ~= roundedValue)
 
     self.super:update()
 end

@@ -8,8 +8,8 @@
 -- Keyed by STATUS EFFECT ID. Source: LSB data/status_effects.yaml `exclusion_group`.
 --
 -- Deliberately absent: the sleep group (2/19/193) has its own dedicated path in
--- statustracker.lua, and the petrification group (7/18/28) has no tracked case where two
--- members can collide.
+-- statustracker.lua (recordStatus and removeStatusFamily), and the petrification group
+-- (7/18/28) has no tracked case where two members can collide.
 --
 -- The `shadow` group below is ours, not the server's. LSB splits it: exclusion_group `blink`
 -- covers 36/444/445/446, while copy_image (66) instead carries `remove: blink` and blink

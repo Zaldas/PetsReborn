@@ -45,7 +45,10 @@ end
 
 -- disposes and removes all children
 function uiContainer:dispose()
-    if not self.isEnabled then return end
+    if not self.isEnabled then
+        self.super:dispose()  -- releases the uiElement private entry, created even when disabled
+        return
+    end
 
     self:clearChildren(true)
 

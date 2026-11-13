@@ -49,7 +49,8 @@ local statusOnMes = {[101]=true,[127]=true,[160]=true,[164]=true,[166]=true,[186
 --   168=ADD_EFFECT_DISPEL (sent as an additional-effect message; param is the removed status)
 local statusOffMes = {[64]=true,[159]=true,[168]=true,[204]=true,[206]=true,[321]=true,[322]=true,[341]=true,[342]=true,[343]=true,[344]=true,[350]=true,[378]=true,[531]=true,[647]=true,[805]=true,[806]=true}
 -- Sleep-family status IDs: 2=Sleep I, 19=Sleep II (tracked as 19 via spellMeta buffId),
--- 193=Lullaby. They share wear-off messaging, so they are always cleared together.
+-- 193=Lullaby. A landed sleep replaces any other (recordStatus) and they share one wear-off
+-- message, so removal always clears all three (removeStatusFamily).
 local SLEEP_FAMILY_STATUS_IDS = {[2]=true, [19]=true, [193]=true}
 local deathMes = {[6]=true,[20]=true,[97]=true,[113]=true,[406]=true,[605]=true,[646]=true}
 
@@ -77,12 +78,11 @@ local TRUST_SPAWN_FLAG = 0x1000  -- set on trusts (4366), clear on pets (258), p
 -- deterministic proof all of them ended (Bind's 95%-per-hit break roll is not observable).
 -- Not included: Stun (mob skills pair it with knockback) and the Sleep family (has its own
 -- wake message, and is often cast on an entity still sliding to a stop).
--- [serverId] = { x, y, z, seen, pending } — see pollMoveBlockBreak. seen = { [statusId] = expiry }
+-- entitySide[serverId].moveBlock = { x, y, z, seen, pending } — see pollMoveBlockBreak. seen = { [statusId] = expiry }
 -- of the live statuses at the last poll; a new or refreshed entry re-baselines, a removal keeps it.
 -- Accepted risk: knockback while the status is genuinely active reads as movement.
 -- 7=Petrification, 11=Bind, 28=Terror
 local MOVE_BLOCK_STATUS_IDS = {[7]=true,[11]=true,[28]=true}
-local moveBlockPositions = {}
 local MOVE_BLOCK_POLL_INTERVAL = 1  -- seconds between polls
 local MOVE_BLOCK_THRESHOLD = 0.5    -- yalms of position delta that counts as genuine movement (absorbs render-interpolation jitter)
 local _lastMoveBlockPollTime = 0
@@ -107,16 +107,36 @@ local spellDamageMes = {[2]=true,[252]=true,[264]=true,[265]=true}
 -- 284/367 are their AoE variants; that mapping lives in C++, so a Lua grep turns up nothing.
 local bioDiaNoDamageMes = {[7]=true,[85]=true,[284]=true,[367]=true}
 
--- [targetId] = { statusId, tier } — single slot; Bio/Dia are mutually exclusive.
-local bioDiaTiers = {}
+-- Per-entity side state, cleared together with the entity's status shell (clearTrackedShell)
+-- and on zone. [serverId] = record with optional fields:
+--   bioDia     = { statusId, tier } — single slot; Bio/Dia are mutually exclusive
+--   displayIds = { [realStatusId] = displayStatusId } (see the display ID note below)
+--   moveBlock  = { x, y, z, seen, pending } (see the move-block note above)
+local entitySide = {}
+
+local function getSide(serverId, key)
+    local rec = entitySide[serverId]
+    return rec and rec[key]
+end
+
+-- Drops the record once its last field is cleared.
+local function setSide(serverId, key, value)
+    local rec = entitySide[serverId]
+    if rec == nil then
+        if value == nil then return end
+        rec = {}
+        entitySide[serverId] = rec
+    end
+    rec[key] = value
+    if next(rec) == nil then entitySide[serverId] = nil end
+end
 
 -- Owned by writeStatus/removeStatus: every write replaces the override and every explicit
 -- removal clears it, so it always belongs to the latest write.
--- [serverId][realStatusId] = displayStatusId (814-1022 range)
-local displayIdOverrides = {}
+-- entitySide[serverId].displayIds[realStatusId] = displayStatusId (814-1022 range)
 
 local function getDisplayId(serverId, statusId)
-    local overrides = displayIdOverrides[serverId]
+    local overrides = getSide(serverId, 'displayIds')
     return (overrides and overrides[statusId]) or statusId
 end
 
@@ -145,11 +165,11 @@ local function writeStatus(serverId, statusId, expiry, displayId)
         statusTracker.trackedEntities[serverId] = statuses
     end
     statuses[statusId] = expiry
-    local overrides = displayIdOverrides[serverId]
+    local overrides = getSide(serverId, 'displayIds')
     if displayId then
         if overrides == nil then
             overrides = {}
-            displayIdOverrides[serverId] = overrides
+            setSide(serverId, 'displayIds', overrides)
         end
         overrides[statusId] = displayId
     elseif overrides then
@@ -160,16 +180,35 @@ end
 local function removeStatus(serverId, statusId)
     local statuses = statusTracker.trackedEntities[serverId]
     if statuses then statuses[statusId] = nil end
-    local overrides = displayIdOverrides[serverId]
+    local overrides = getSide(serverId, 'displayIds')
     if overrides then overrides[statusId] = nil end
 end
 
--- Drops an entity's status shell and every side table keyed by it.
+-- Removes every sleep-family status except exceptId (nil removes all three).
+local function clearSleepFamily(serverId, exceptId)
+    for sid in pairs(SLEEP_FAMILY_STATUS_IDS) do
+        if sid ~= exceptId then removeStatus(serverId, sid) end
+    end
+end
+
+-- Removal from a wear-off or erase message: a sleep clears the whole sleep family, and a
+-- Bio/Dia drops its tier record so the next cast of any tier is accepted.
+local function removeStatusFamily(serverId, statusId)
+    if SLEEP_FAMILY_STATUS_IDS[statusId] then
+        clearSleepFamily(serverId, nil)
+        return
+    end
+    removeStatus(serverId, statusId)
+    local active = getSide(serverId, 'bioDia')
+    if active and active.statusId == statusId then
+        setSide(serverId, 'bioDia', nil)
+    end
+end
+
+-- Drops an entity's status shell and its side record (entitySide).
 local function clearTrackedShell(serverId)
     statusTracker.trackedEntities[serverId] = nil
-    bioDiaTiers[serverId] = nil
-    displayIdOverrides[serverId] = nil
-    moveBlockPositions[serverId] = nil
+    entitySide[serverId] = nil
 end
 
 -- Real status ID behind a display ID, for resource lookups.
@@ -194,7 +233,7 @@ local function applyBioDia(action, target, ability, now)
     local spell = action.Param
     local bioDia = bioDiaData[spell]
     if not bioDia then return end
-    local active = bioDiaTiers[target.Id]
+    local active = getSide(target.Id, 'bioDia')
     -- sweepExpiredEntities only drops the tier record when the entity's whole shell goes, so a
     -- Bio/Dia that lapsed while other debuffs kept the shell alive leaves a stale record behind.
     -- Gate on the live timer, not the record, or the next cast of that tier is rejected forever.
@@ -205,7 +244,7 @@ local function applyBioDia(action, target, ability, now)
     if not active or active.tier < bioDia.tier then
         removeStatus(target.Id, bioDia.opposing)
         writeStatus(target.Id, bioDia.statusId, now + bioDia.dur, bioDia.displayId)
-        bioDiaTiers[target.Id] = { statusId = bioDia.statusId, tier = bioDia.tier }
+        setSide(target.Id, 'bioDia', { statusId = bioDia.statusId, tier = bioDia.tier })
     end
 end
 
@@ -222,15 +261,20 @@ local function clearExclusionGroup(serverId, statusId)
 end
 
 -- Write a landed status. Clears what the server removes silently on landing: the rest of its
--- exclusion group and its opposing effect (see negativeEffects).
+-- exclusion group, its opposing effect (see negativeEffects) and any other sleep.
 -- inferred: the status rides a damage message, so a resist is indistinguishable from a landing;
--- the opposing effect is left in place.
+-- the opposing effect and other sleeps are left in place.
 -- displayId: tier icon for this write, nil for none
 local function recordStatus(serverId, statusId, expiry, inferred, displayId)
     clearExclusionGroup(serverId, statusId)
-    local opposingId = not inferred and negativeEffects and negativeEffects[statusId]
-    if opposingId then
-        removeStatus(serverId, opposingId)
+    if not inferred then
+        local opposingId = negativeEffects and negativeEffects[statusId]
+        if opposingId then
+            removeStatus(serverId, opposingId)
+        end
+        if SLEEP_FAMILY_STATUS_IDS[statusId] then
+            clearSleepFamily(serverId, statusId)
+        end
     end
     writeStatus(serverId, statusId, expiry, displayId)
 end
@@ -265,7 +309,7 @@ local function applyStatusOn(action, target, ability, now, isPetActor)
         -- Ahead of skillDebuffs: pet ability IDs share the mob-skill namespace, so a pet
         -- ability must not resolve against a mob-skill entry of the same ID.
         duration = petAbilities.durations[spell]
-    elseif (action.Type == 7 or action.Type == 11 or (action.Type == 3 and action.UserIndex ~= nil and helpers.GetIsMob(action.UserIndex) == true)) and mobStatusDurations ~= nil and mobStatusDurations.skillDebuffs[spell] ~= nil then
+    elseif (action.Type == 11 or (action.Type == 3 and action.UserIndex ~= nil and helpers.GetIsMob(action.UserIndex) == true)) and mobStatusDurations ~= nil and mobStatusDurations.skillDebuffs[spell] ~= nil then
         local skillEntry = mobStatusDurations.skillDebuffs[spell]
         if type(skillEntry) == 'table' then
             local d = statusId and skillEntry[statusId]
@@ -282,11 +326,6 @@ local function applyStatusOn(action, target, ability, now, isPetActor)
         duration = FALLBACK_DURATION_S
     end
     if duration == 0 then return true end  -- shadow/luopan-based effects have no time component
-    if meta and meta.clears then
-        for _, clearId in ipairs(meta.clears) do
-            removeStatus(target.Id, clearId)
-        end
-    end
     local displayId = meta and meta.statusId == statusId and meta.displayId or nil
     recordStatus(target.Id, statusId, now + duration, false, displayId)
     return false
@@ -311,7 +350,7 @@ end
 local function applyStatusOff(action, target, ability, now)
     local statusId = ability.Param
     if statusId and statusId ~= 0 then
-        removeStatus(target.Id, statusId)
+        removeStatusFamily(target.Id, statusId)
     end
 end
 
@@ -413,7 +452,7 @@ local function applyAdditionalEffect(action, target, ability, now)
             local aeDuration = additionalEffectDurations[aeStatusId] or FALLBACK_DURATION_S
             recordStatus(target.Id, aeStatusId, now + aeDuration)
         elseif statusOffMes[aeMessage] then
-            removeStatus(target.Id, aeStatusId)
+            removeStatusFamily(target.Id, aeStatusId)
         end
     end
 end
@@ -584,7 +623,7 @@ statusTracker.HandleActionPacket = function(e)
                 -- Type 7/11 where actor != target = mob debuff on pet/player — processed
                 -- normally, as is a party-owned pet using an ability petAbilities covers
                 -- (automaton abilities are type 11).
-                local isMobSelfBuff = (action.Type == 7 or action.Type == 11) and not isKnownPetAbility and (action.UserId == target.Id)
+                local isMobSelfBuff = action.Type == 11 and not isKnownPetAbility and (action.UserId == target.Id)
                 if not isMobSelfBuff then
                     if applyStatusOn(action, target, ability, now, isPetActor) then
                         goto continue_ability
@@ -611,13 +650,13 @@ statusTracker.HandleActionPacket = function(e)
             -- Mob skill silent debuffs: mob skills that apply status via mobStatusEffectMove()
             -- but never call skill:setMsg() — damage message fires, status lands silently.
             -- Only applied when ability.Param (damage) > 0 and no active timer exists.
-            if (action.Type == 7 or action.Type == 11) and action.UserId ~= target.Id then
+            if action.Type == 11 and action.UserId ~= target.Id then
                 applySilentMobDebuff(action, target, ability, now)
             end
 
             -- Pet abilities share the mob-skill ID namespace, so a known one never resolves
             -- against the mob-skill tables here.
-            if (action.Type == 7 or action.Type == 11) and message == 0 and not isKnownPetAbility then
+            if action.Type == 11 and message == 0 and not isKnownPetAbility then
                 applyNoneMessageSkill(action, target, ability, now)
             end
 
@@ -634,28 +673,12 @@ statusTracker.HandleClearMessage = function(e)
         return;
     end
 
-    -- if we're tracking a mob that dies, reset its status
-    if deathMes[parsedPacket.message] and statusTracker.trackedEntities[parsedPacket.target] then
+    -- An entity that dies loses every status
+    if deathMes[parsedPacket.message] then
         clearTrackedShell(parsedPacket.target)
     elseif statusOffMes[parsedPacket.message] then
-        -- Clear the buffid that just wore off.
-        -- Sleep family (IDs 2, 19, 193) shares one wear-off message; clear all three
-        -- so a Sleep I icon left from an earlier cast doesn't linger after Sleep II wears.
         if (parsedPacket.param ~= nil) then
-            local p = parsedPacket.param;
-            if SLEEP_FAMILY_STATUS_IDS[p] then
-                for sid in pairs(SLEEP_FAMILY_STATUS_IDS) do
-                    removeStatus(parsedPacket.target, sid)
-                end
-            else
-                removeStatus(parsedPacket.target, p)
-                if p == 134 or p == 135 then
-                    local active = bioDiaTiers[parsedPacket.target]
-                    if active and active.statusId == p then
-                        bioDiaTiers[parsedPacket.target] = nil
-                    end
-                end
-            end
+            removeStatusFamily(parsedPacket.target, parsedPacket.param)
         end
     end
 end
@@ -759,13 +782,13 @@ local function pollMoveBlockBreak(now)
             end
         end
         if live == nil then
-            moveBlockPositions[serverId] = nil
+            setSide(serverId, 'moveBlock', nil)
         else
             -- index == 0: despawned or out of range — keep any baseline and retry next poll.
             local index = helpers.GetIndexFromId(serverId)
             if index ~= nil and index ~= 0 then
                 local x, y, z = entMgr:GetLocalPositionX(index), entMgr:GetLocalPositionY(index), entMgr:GetLocalPositionZ(index)
-                local tracked = moveBlockPositions[serverId]
+                local tracked = getSide(serverId, 'moveBlock')
                 -- A status absent from seen, or with a changed expiry, is a fresh (re)apply.
                 local fresh = (tracked == nil)
                 if not fresh then
@@ -777,7 +800,7 @@ local function pollMoveBlockBreak(now)
                     end
                 end
                 if fresh then
-                    moveBlockPositions[serverId] = { x = x, y = y, z = z, seen = live, pending = true }
+                    setSide(serverId, 'moveBlock', { x = x, y = y, z = z, seen = live, pending = true })
                 elseif tracked.pending then
                     tracked.seen = live
                     tracked.x, tracked.y, tracked.z = x, y, z
@@ -788,7 +811,7 @@ local function pollMoveBlockBreak(now)
                     local dx, dy, dz = x - tracked.x, y - tracked.y, z - tracked.z
                     if math.sqrt(dx*dx + dy*dy + dz*dz) > MOVE_BLOCK_THRESHOLD then
                         clearLiveStatuses(serverId, MOVE_BLOCK_STATUS_IDS, now)
-                        moveBlockPositions[serverId] = nil
+                        setSide(serverId, 'moveBlock', nil)
                     end
                 end
             end
@@ -902,9 +925,7 @@ ashita.events.register('packet_in', '__status_packet_in_cb', function (e)
 
     if (e.id == 0x00A) then -- Clear everything on zone
         statusTracker.trackedEntities = T{};
-        bioDiaTiers = {};
-        displayIdOverrides = {};
-        moveBlockPositions = {};
+        entitySide = {};
     elseif (e.id == 0x0029) then
         statusTracker.HandleClearMessage(e);
     elseif (e.id == 0x0028) then
