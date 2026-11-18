@@ -173,7 +173,7 @@ return {
 
         -- ── Ahriman (Dynamis Vanguard Eye) ────────────────────────────────────
         [492] = 120,  -- Abyss Blast     → BLINDNESS (5)         fixed 120s [abyss_blast.lua]
-        [491] = 120,  -- Call of the Grave → INT_DOWN (140)      fixed 120s [call_of_the_grave.lua]
+        [491] = 55,   -- Call of the Grave → INT_DOWN (140)      power 10 / 5s decay [call_of_the_grave.lua]
         [534] = 90,   -- Kartstrahl      → SLEEP_I (2)           random 30-90s; max [kartstrahl.lua]
         [550] = 90,   -- Hypnosis        → SLEEP_I (2)           TP-scaled 45-90s; max [hypnosis.lua]
         [551] = 10,   -- Mind Break      → MAX_MP_DOWN (145)     fixed 10s [mind_break.lua]
@@ -205,8 +205,8 @@ return {
         [497] = 60,   -- Lowing          → PLAGUE (31)           fixed 60s [lowing.lua]
 
         -- ── Bugard ────────────────────────────────────────────────────────────
-        [343]  = 300, -- Spoil           → STR_DOWN (136)        fixed 300s [spoil.lua]
-        [1862] = 300, -- Spoil (N. Bugard) → STR_DOWN (136)      fixed 300s [spoil.lua; client name: Spoil]
+        [343]  = 33,  -- Spoil           → STR_DOWN (136)        power 10 / 3s decay [spoil.lua]
+        [1862] = 33,  -- Spoil (N. Bugard) → STR_DOWN (136)      power 10 / 3s decay [spoil.lua; client name: Spoil]
         [386]  = 180, -- Awful Eye       → STR_DOWN (136)        fixed 180s [awful_eye.lua; gaze]
         [387]  = 6,   -- Heavy Bellow    → STUN (10)             fixed 6s [heavy_bellow.lua]
 
@@ -220,7 +220,7 @@ return {
         -- ── Crab ──────────────────────────────────────────────────────────────
         [280] = 180,  -- Sonic Wave      → DEFENSE_DOWN (149)    fixed 180s [sonic_wave.lua]
         [376] = 180,  -- Foul Breath     → DISEASE (8)           fixed 180s [foul_breath.lua]
-        [442] = 180,  -- Bubble Shower   → STR_DOWN (136)        fixed 180s [bubble_shower.lua]
+        [442] = 99,   -- Bubble Shower   → STR_DOWN (136)        power 10 / 9s decay [bubble_shower.lua]
 
         -- ── Crawler ───────────────────────────────────────────────────────────
         [344] = 540,  -- Sticky Thread   → SLOW (13)             random 300-540s; max [sticky_thread.lua]
@@ -274,8 +274,8 @@ return {
 
         -- ── Mindflayer ────────────────────────────────────────────────────────
         [369] = 30,   -- Brain Crush     → SILENCE (6)           fixed 30s [brain_crush.lua]
-        [423] = 120,  -- Brain Drain     → INT_DOWN (140)        fixed 120s [brain_drain.lua]
-        [524] = 300,  -- Mind Drain      → MND_DOWN (141)        fixed 300s [mind_drain.lua]
+        [423] = 99,   -- Brain Drain     → INT_DOWN (140)        power 10 / 9s decay [brain_drain.lua]
+        [524] = 45,   -- Mind Drain      → MND_DOWN (141)        power 14 / 3s decay [mind_drain.lua]
 
         -- ── Morbol ────────────────────────────────────────────────────────────
         -- Bad Breath randomly applies several debuffs in one action; all have 60s duration.
@@ -333,16 +333,16 @@ return {
 
         -- ── Various beasts ────────────────────────────────────────────────────
         [393] = 180,  -- Sonic Boom      → ATTACK_DOWN (147)     TP-based max [sonic_boom.lua]
-        [410] = 180,  -- Sound Blast     → INT_DOWN (140)        fixed 180s [sound_blast.lua]
-        [488] = 180,  -- Acid Breath     → STR_DOWN (136)        fixed 180s [acid_breath.lua]
-        [489] = 180,  -- Stinking Gas    → VIT_DOWN (138)        fixed 180s [stinking_gas.lua]
+        [410] = 33,   -- Sound Blast     → INT_DOWN (140)        power 10 / 3s decay [sound_blast.lua]
+        [488] = 55,   -- Acid Breath     → STR_DOWN (136)        power 10 / 5s decay [acid_breath.lua]
+        [489] = 55,   -- Stinking Gas    → VIT_DOWN (138)        power 10 / 5s decay [stinking_gas.lua]
         [501] = 180,  -- Frightful Roar  → DEFENSE_DOWN (149)    fixed 180s [frightful_roar.lua]
 
         -- ── Ignidrake (ToAU) ──────────────────────────────────────────────────
         [817] = 60,   -- Dread Shriek    → PARALYSIS (4)         random 30-60s; max [dread_shriek.lua]
 
         -- ── Fly / Mourioche ───────────────────────────────────────────────────
-        [306] = 180,  -- Scream          → MND_DOWN (141)        fixed 180s [scream.lua]
+        [306] = 33,   -- Scream          → MND_DOWN (141)        power 10 / 3s decay [scream.lua]
 
         -- ── Wyrm ──────────────────────────────────────────────────────────────
         [1304] = 120, -- Bai Wing        → SLOW (13)             fixed 120s [bai_wing.lua]
@@ -401,7 +401,7 @@ return {
         [484]  = 420, -- Black Cloud     → BLINDNESS (5)         fixed 420s [black_cloud.lua]
 
         -- ── Orc (Battle Dance) ────────────────────────────────────────────────
-        [609]  = 180, -- Battle Dance    → DEX_DOWN (137)        fixed 180s [battle_dance.lua]
+        [609]  = 99,  -- Battle Dance    → DEX_DOWN (137)        power 10 / 9s decay [battle_dance.lua]
 
         -- ── Peiste ────────────────────────────────────────────────────────────
         -- Abominable Belch applies three debuffs; durations are TP-scaled (max values used).
