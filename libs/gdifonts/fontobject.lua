@@ -60,9 +60,21 @@ local function Error(text)
     print(chat.header('GdiFonts') .. highlighted .. '\30\01');
 end
 
+
+local checkedFonts = T{};
+local function GetFontAvailable(renderer, fontName)
+    local result = checkedFonts[fontName];
+    if result ~= nil then
+        return result;
+    end
+    result = renderer.GetFontAvailable(fontName);
+    checkedFonts[fontName] = result;
+    return result;
+end
+
 local notifiedFonts = {};
 local function GetDefaultFont(renderer)
-    if renderer.GetFontAvailable(default_font) then
+    if GetFontAvailable(renderer, default_font) then
         return default_font;
     elseif not notifiedFonts[default_font] then
         Error(string.format('The default font ($H%s$R) is not installed.  Failed to load a valid font.', default_font));
@@ -70,7 +82,7 @@ local function GetDefaultFont(renderer)
     end
 end
 local function ValidateFont(renderer, font)
-    if (renderer.GetFontAvailable(font) == false) then
+    if (GetFontAvailable(renderer, font) == false) then
         if not notifiedFonts[font] then
             Error(string.format('Could not load the font $H%s$R.', font));
             notifiedFonts[font] = true;
@@ -285,6 +297,16 @@ function object:set_z_order(z_order)
         self.settings.z_order = z_order;
         self.sort();
     end
+end
+
+function object:get_text_size()
+    if self.is_dirty then
+        self:get_texture();
+    end
+    if self.rect == nil then
+        return 0, 0;
+    end
+    return (self.rect.right - self.rect.left), (self.rect.bottom - self.rect.top);
 end
 
 return object;
